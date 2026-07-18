@@ -7,9 +7,12 @@ export default async function AdminLoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const params = await searchParams;
-  const error = params.error
-    ? decodeURIComponent(params.error)
-    : null;
+  const error =
+    params.error === "Configuration"
+      ? "Sesi login bermasalah. Coba lagi."
+      : params.error
+        ? decodeURIComponent(params.error)
+        : null;
 
   return (
     <BlcShell>

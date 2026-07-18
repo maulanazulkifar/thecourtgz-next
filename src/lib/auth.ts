@@ -1,4 +1,4 @@
-import NextAuth from "next-auth";
+import NextAuth, { CredentialsSignin } from "next-auth";
 import Discord from "next-auth/providers/discord";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
@@ -28,6 +28,13 @@ async function verifyRecaptcha(token: string, ip?: string | null): Promise<boole
   const data = (await res.json()) as { success?: boolean; score?: number };
   const min = Number(process.env.RECAPTCHA_MIN_SCORE ?? 0.5);
   return Boolean(data.success) && (data.score ?? 0) >= min;
+}
+
+class LoginError extends CredentialsSignin {
+  constructor(message: string) {
+    super(message);
+    this.code = message;
+  }
 }
 
 function randomPassword(): string {
@@ -71,7 +78,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const token = String(credentials?.token ?? "");
 
         if (!username || !password) {
-          throw new Error("Kredensial tidak valid.");
+          throw new LoginError("Kredensial tidak valid.");
         }
 
         const ip =
@@ -80,26 +87,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const key = `admin-login:${username.toLowerCase()}|${ip}`;
         const limited = rateLimit(key, 5, 5 * 60 * 1000);
         if (!limited.ok) {
-          throw new Error("Terlalu banyak percobaan login. Coba lagi dalam beberapa menit.");
+          throw new LoginError("Terlalu banyak percobaan login. Coba lagi dalam beberapa menit.");
         }
 
         if (!(await verifyRecaptcha(token, ip))) {
-          throw new Error("Verifikasi keamanan gagal. Coba lagi.");
+          throw new LoginError("Verifikasi keamanan gagal. Coba lagi.");
         }
 
         const user = await prisma.user.findUnique({ where: { email: username } });
         if (!user?.password) {
-          throw new Error("Kredensial tidak valid.");
+          throw new LoginError("Kredensial tidak valid.");
         }
 
         const ok = await bcrypt.compare(password, user.password);
         if (!ok) {
-          throw new Error("Kredensial tidak valid.");
+          throw new LoginError("Kredensial tidak valid.");
         }
 
         const roles = await getUserRoles(user.id);
         if (!isStaff(roles)) {
-          throw new Error("Akses admin tidak diizinkan untuk akun ini.");
+          throw new LoginError("Akses admin tidak diizinkan untuk akun ini.");
         }
 
         await prisma.user.update({

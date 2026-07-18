@@ -15,7 +15,7 @@ export default auth((req) => {
     if (isLoggedIn) {
       return NextResponse.redirect(new URL("/home", req.url));
     }
-    const url = new URL("/api/auth/signin/discord", req.url);
+    const url = new URL("/auth/discord", req.url);
     url.searchParams.set("callbackUrl", "/home");
     return NextResponse.redirect(url);
   }
@@ -39,7 +39,7 @@ export default auth((req) => {
       if (pathname.startsWith("/dashboard") || pathname.startsWith("/users")) {
         return NextResponse.redirect(new URL("/admin/login", req.url));
       }
-      const url = new URL("/api/auth/signin/discord", req.url);
+      const url = new URL("/auth/discord", req.url);
       url.searchParams.set("callbackUrl", pathname);
       return NextResponse.redirect(url);
     }

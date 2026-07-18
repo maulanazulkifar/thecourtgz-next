@@ -66,7 +66,13 @@ export function AdminLoginForm({ siteKey }: { siteKey: string }) {
     setLoading(false);
 
     if (result?.error) {
-      setError(result.error === "CredentialsSignin" ? "Kredensial tidak valid." : result.error);
+      const detail = (result as { code?: string }).code;
+      setError(
+        detail ??
+          (result.error === "CredentialsSignin"
+            ? "Kredensial tidak valid."
+            : "Login gagal. Coba lagi."),
+      );
       return;
     }
 
