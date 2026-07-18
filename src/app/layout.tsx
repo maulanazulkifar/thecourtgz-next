@@ -5,7 +5,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "BLACK LOTUS COURT",
   description: "Inventory & stock portal — BLACK LOTUS COURT",
-  icons: { icon: "/image/blc.png" },
+  icons: {
+    icon: [{ url: "/image/blc.png", type: "image/png" }],
+    shortcut: "/image/blc.png",
+    apple: "/image/blc.png",
+  },
 };
 
 export default function RootLayout({

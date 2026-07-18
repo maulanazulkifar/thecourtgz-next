@@ -1,20 +1,26 @@
 import { BlcShell } from "@/components/BlcShell";
+import { CategoryManageRow } from "@/components/CategoryManageRow";
 import { SimpleForm } from "@/components/SimpleForm";
 import { storeCategoryAction } from "@/app/actions/inventory";
+import { canManageCatalog } from "@/lib/category-access";
 import { requireSession } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { isStaff } from "@/lib/roles";
+import { redirect } from "next/navigation";
 
 export default async function CategoryPage() {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
+  const canManage = canManageCatalog(session.user.email);
+  if (!canManage) redirect("/home");
+
   const categories = await prisma.category.findMany({
     orderBy: { name: "asc" },
     select: { id: true, name: true, description: true },
   });
 
   return (
-    <BlcShell showNav isStaff={staff} wide scroll>
+    <BlcShell showNav isStaff={staff} canManageCatalog={canManage} wide scroll>
       <div className="blc-page-head">
         <h1>Tambah Kategori</h1>
         <p>Buat kategori inventori baru (mis. Senjata, Material).</p>
@@ -52,12 +58,13 @@ export default async function CategoryPage() {
         ) : (
           <div className="blc-list">
             {categories.map((c) => (
-              <article key={String(c.id)} className="blc-list-item">
-                <div>
-                  <h3>{c.name}</h3>
-                  <p>{c.description || "—"}</p>
-                </div>
-              </article>
+              <CategoryManageRow
+                key={String(c.id)}
+                id={String(c.id)}
+                name={c.name}
+                description={c.description}
+                canManage={canManage}
+              />
             ))}
           </div>
         )}

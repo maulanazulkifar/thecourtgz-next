@@ -5,13 +5,15 @@ import { requireSuperadmin } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { SPATIE_USER_MORPH } from "@/lib/constants";
 import { notFound } from "next/navigation";
+import { canManageCatalog } from "@/lib/category-access";
 
 export default async function EditUserPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireSuperadmin();
+  const session = await requireSuperadmin();
+  const canManage = canManageCatalog(session.user.email);
   const { id } = await params;
 
   const user = await prisma.user.findUnique({ where: { id: BigInt(id) } });
@@ -26,7 +28,7 @@ export default async function EditUserPage({
   const bound = updateUserAction.bind(null, id);
 
   return (
-    <BlcShell showNav isStaff wide scroll>
+    <BlcShell showNav isStaff canManageCatalog={canManage} wide scroll>
       <div className="blc-page-head">
         <h1>Edit User</h1>
         <p>{user.email}</p>

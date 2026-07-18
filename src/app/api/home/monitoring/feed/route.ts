@@ -18,22 +18,32 @@ export async function GET(req: NextRequest) {
 
   const version = await getStockVersion();
   const clientVersion = Number(req.nextUrl.searchParams.get("v") ?? -1);
-  const from = req.nextUrl.searchParams.get("from") ?? new Date().toISOString().slice(0, 10);
-  const to = req.nextUrl.searchParams.get("to") ?? new Date().toISOString().slice(0, 10);
+  const all = (req.nextUrl.searchParams.get("all") ?? "").trim();
+  const fromRaw = (req.nextUrl.searchParams.get("from") ?? "").trim();
+  const toRaw = (req.nextUrl.searchParams.get("to") ?? "").trim();
   const member = (req.nextUrl.searchParams.get("member") ?? "").trim();
+  const category = (req.nextUrl.searchParams.get("category") ?? "").trim();
 
-  let fromDate = startOfDay(new Date());
-  let toDate = endOfDay(new Date());
-  try {
-    fromDate = startOfDay(parseISO(from));
-    toDate = endOfDay(parseISO(to));
-  } catch {
-    /* keep defaults */
-  }
-  if (fromDate > toDate) {
-    const tmp = fromDate;
-    fromDate = startOfDay(toDate);
-    toDate = endOfDay(tmp);
+  const useAllDates = all === "1" || all === "true";
+  let fromDate: Date | null = null;
+  let toDate: Date | null = null;
+
+  if (!useAllDates) {
+    const today = new Date().toISOString().slice(0, 10);
+    const from = fromRaw || today;
+    const to = toRaw || today;
+    try {
+      fromDate = startOfDay(parseISO(from));
+      toDate = endOfDay(parseISO(to));
+    } catch {
+      fromDate = startOfDay(new Date());
+      toDate = endOfDay(new Date());
+    }
+    if (fromDate > toDate) {
+      const tmp = fromDate;
+      fromDate = startOfDay(toDate);
+      toDate = endOfDay(tmp);
+    }
   }
 
   if (clientVersion === version && clientVersion >= 0) {
@@ -43,7 +53,10 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const payload = await buildMonitoringPayload(fromDate, toDate, member);
+  const payload = await buildMonitoringPayload(fromDate, toDate, {
+    memberId: member,
+    categoryId: category,
+  });
   return NextResponse.json(
     {
       unchanged: false,

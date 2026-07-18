@@ -6,6 +6,8 @@ import {
   markReturnedAction,
   markUnreturnableAction,
 } from "@/app/actions/inventory";
+import { canActOnWeaponReturn } from "@/lib/category-access";
+import { BlcNoticeOverlay } from "@/components/BlcNoticeOverlay";
 
 type Notice = {
   user_id: number;
@@ -22,6 +24,7 @@ type Row = {
   type: string;
   type_label: string;
   user: string;
+  user_id: number;
   item: string;
   category: string;
   quantity: number;
@@ -37,18 +40,53 @@ type Row = {
   status: string;
 };
 
+type NoticeUi =
+  | { kind: "confirm-return"; id: number; item: string; maxQty: number }
+  | { kind: "confirm-lost"; id: number; item: string }
+  | { kind: "success"; title: string; message: string }
+  | { kind: "error"; message: string };
+
+function statusBadge(row: Row): { label: string; klass: string } {
+  if (row.status === "belum_dikembalikan") {
+    return { label: "Belum dikembalikan", klass: "is-pending-return" };
+  }
+  if (row.status === "sudah_dikembalikan") {
+    return { label: "Sudah dikembalikan", klass: "is-returned" };
+  }
+  if (row.status === "tidak_bisa_dikembalikan") {
+    return { label: "Tidak bisa dikembalikan", klass: "is-lost" };
+  }
+  if (row.type === "out") return { label: "Withdraw", klass: "is-withdraw" };
+  if (row.type_label === "Pengembalian") {
+    return { label: "Pengembalian", klass: "is-deposit" };
+  }
+  return { label: "Deposit", klass: "is-deposit" };
+}
+
 export function MonitoringClient({
+  viewerId,
+  viewerEmail,
   initialFrom,
   initialTo,
+  initialAllDates,
   initialMember,
+  initialCategory,
+  members,
+  categories,
   initialNotices,
   initialRows,
   initialPending,
   initialVersion,
 }: {
+  viewerId: string;
+  viewerEmail: string | null | undefined;
   initialFrom: string;
   initialTo: string;
+  initialAllDates: boolean;
   initialMember: string;
+  initialCategory: string;
+  members: { id: string; name: string }[];
+  categories: { id: string; name: string }[];
   initialNotices: Notice[];
   initialRows: Row[];
   initialPending: number;
@@ -57,23 +95,55 @@ export function MonitoringClient({
   const router = useRouter();
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
+  const [allDates, setAllDates] = useState(initialAllDates);
   const [member, setMember] = useState(initialMember);
+  const [category, setCategory] = useState(initialCategory);
   const [notices, setNotices] = useState(initialNotices);
   const [rows, setRows] = useState(initialRows);
   const [pending, setPending] = useState(initialPending);
   const [version, setVersion] = useState(initialVersion);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lostReason, setLostReason] = useState("");
+  const [returnQty, setReturnQty] = useState(1);
+  const [returnNote, setReturnNote] = useState("");
+  const [uiNotice, setUiNotice] = useState<NoticeUi | null>(null);
+
+  useEffect(() => {
+    setFrom(initialFrom);
+    setTo(initialTo);
+    setAllDates(initialAllDates);
+    setMember(initialMember);
+    setCategory(initialCategory);
+    setNotices(initialNotices);
+    setRows(initialRows);
+    setPending(initialPending);
+    setVersion(initialVersion);
+  }, [
+    initialFrom,
+    initialTo,
+    initialAllDates,
+    initialMember,
+    initialCategory,
+    initialNotices,
+    initialRows,
+    initialPending,
+    initialVersion,
+  ]);
 
   useEffect(() => {
     const poll = () => {
       if (document.hidden) return;
       const qs = new URLSearchParams({
         v: String(version),
-        from,
-        to,
         member,
+        category,
       });
+      if (allDates) {
+        qs.set("all", "1");
+      } else {
+        qs.set("from", from);
+        qs.set("to", to);
+      }
       fetch(`/api/home/monitoring/feed?${qs}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
@@ -95,169 +165,422 @@ export function MonitoringClient({
       clearInterval(id);
       document.removeEventListener("visibilitychange", poll);
     };
-  }, [version, from, to, member]);
+  }, [version, from, to, allDates, member, category]);
 
   function onFilter(e: FormEvent) {
     e.preventDefault();
-    const qs = new URLSearchParams({ from, to, member });
+    const qs = new URLSearchParams();
+    if (member) qs.set("member", member);
+    if (category) qs.set("category", category);
+    if (allDates) {
+      qs.set("all", "1");
+    } else {
+      qs.set("from", from);
+      qs.set("to", to);
+    }
     router.push(`/home/monitoring?${qs}`);
   }
 
-  async function onReturn(id: number) {
-    if (!confirm("Tandai senjata sudah dikembalikan? Stok akan bertambah.")) return;
-    setError(null);
-    const result = await markReturnedAction(id);
-    if (!result.ok) setError(result.error);
-    else setMessage(result.message ?? "OK");
+  function canShowReturnActions(row: Row) {
+    return (
+      row.needs_return &&
+      canActOnWeaponReturn(viewerEmail, viewerId, row.user_id)
+    );
   }
 
-  async function onUnreturnable(id: number) {
-    const reason = prompt("Alasan senjata tidak bisa dikembalikan:");
+  async function confirmReturn() {
+    if (!uiNotice || uiNotice.kind !== "confirm-return") return;
+    const qty = Number(returnQty);
+
+    if (!Number.isInteger(qty) || qty < 0) {
+      setUiNotice({
+        kind: "error",
+        message: "Jumlah dikembalikan tidak valid.",
+      });
+      return;
+    }
+
+    if (qty === 0) {
+      setUiNotice({
+        kind: "error",
+        message:
+          "Jumlah 0 sama saja tidak dikembalikan. Kalau memang tidak ada yang kembali, pakai tombol \"Tidak bisa dikembalikan\". Kalau ada yang kembali, isi minimal 1.",
+      });
+      return;
+    }
+
+    if (qty > uiNotice.maxQty) {
+      setUiNotice({
+        kind: "error",
+        message: `Jumlah dikembalikan tidak boleh lebih dari ${uiNotice.maxQty}.`,
+      });
+      return;
+    }
+
+    setLoading(true);
+    const result = await markReturnedAction(
+      uiNotice.id,
+      qty,
+      returnNote.trim() || null,
+    );
+    setLoading(false);
+    if (!result.ok) {
+      setUiNotice({ kind: "error", message: result.error });
+      return;
+    }
+    setReturnNote("");
+    setUiNotice({
+      kind: "success",
+      title: "Pengembalian Berhasil",
+      message: result.message ?? "Senjata sudah dikembalikan ke gudang.",
+    });
+  }
+
+  async function confirmLost() {
+    if (!uiNotice || uiNotice.kind !== "confirm-lost") return;
+    const reason = lostReason.trim();
     if (!reason) return;
-    setError(null);
-    const result = await markUnreturnableAction(id, reason);
-    if (!result.ok) setError(result.error);
-    else setMessage(result.message ?? "OK");
+    setLoading(true);
+    const result = await markUnreturnableAction(uiNotice.id, reason);
+    setLoading(false);
+    if (!result.ok) {
+      setUiNotice({ kind: "error", message: result.error });
+      return;
+    }
+    setLostReason("");
+    setUiNotice({
+      kind: "success",
+      title: "Status Tersimpan",
+      message: result.message ?? "Ditandai tidak bisa dikembalikan.",
+    });
+  }
+
+  function closeSuccess() {
+    setUiNotice(null);
+    router.refresh();
   }
 
   return (
     <>
-      <div className="blc-page-head">
-        <h1>
-          <span className="blc-live-dot" /> Monitoring
-        </h1>
-        <p>
-          Pantau deposit/withdraw realtime. Senjata pending: <strong>{pending}</strong>
-        </p>
-      </div>
-
-      {message ? <div className="blc-alert blc-alert-success">{message}</div> : null}
-      {error ? <div className="blc-alert blc-alert-danger">{error}</div> : null}
-
-      <form className="blc-filter" onSubmit={onFilter}>
+      <form className="blc-mon-filter" onSubmit={onFilter}>
         <div className="blc-field" style={{ margin: 0 }}>
           <label className="blc-label" htmlFor="from">
-            Dari
+            Dari tanggal
           </label>
           <input
             id="from"
             type="date"
             className="blc-input"
             value={from}
+            disabled={allDates}
             onChange={(e) => setFrom(e.target.value)}
           />
         </div>
         <div className="blc-field" style={{ margin: 0 }}>
           <label className="blc-label" htmlFor="to">
-            Sampai
+            Sampai tanggal
           </label>
           <input
             id="to"
             type="date"
             className="blc-input"
             value={to}
+            disabled={allDates}
             onChange={(e) => setTo(e.target.value)}
           />
         </div>
         <div className="blc-field" style={{ margin: 0 }}>
           <label className="blc-label" htmlFor="member">
-            Member
+            Nama
           </label>
-          <input
+          <select
             id="member"
-            className="blc-input"
+            className="blc-select"
             value={member}
             onChange={(e) => setMember(e.target.value)}
-            placeholder="Nama member"
-          />
+          >
+            <option value="">Semua nama</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
         </div>
-        <button type="submit" className="blc-btn">
-          Filter
+        <div className="blc-field" style={{ margin: 0 }}>
+          <label className="blc-label" htmlFor="category">
+            Kategori
+          </label>
+          <select
+            id="category"
+            className="blc-select"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+          >
+            <option value="">Semua kategori</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <label className="blc-mon-all-dates">
+          <input
+            type="checkbox"
+            checked={allDates}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setAllDates(checked);
+              if (!checked) {
+                const today = new Date().toISOString().slice(0, 10);
+                if (!from) setFrom(today);
+                if (!to) setTo(today);
+              }
+            }}
+          />
+          <span>Semua tanggal</span>
+        </label>
+        <button type="submit" className="blc-btn blc-mon-filter-btn">
+          Terapkan filter
         </button>
       </form>
 
-      <div className="blc-notice-wrap">
+      <div className="blc-mon-summary">
+        Ada <strong>{pending}</strong> withdraw{" "}
+        <strong className="blc-mon-summary-hl">kategori Senjata</strong> yang belum
+        dikembalikan.{" "}
+        <span className="blc-mon-summary-note">
+          (Ammo / Material / lainnya tidak perlu pengembalian.)
+        </span>
+      </div>
+
+      <section className="blc-mon-section">
+        <h2 className="blc-mon-section-title">Sudah input</h2>
         {notices.length === 0 ? (
-          <div className="blc-empty" style={{ padding: "0.5rem" }}>
+          <div className="blc-empty" style={{ padding: "0.75rem" }}>
             Belum ada aktivitas di rentang ini.
           </div>
         ) : (
-          notices.map((n) => (
-            <div
-              key={n.user_id}
-              className={`blc-notice-chip ${n.pending_weapon > 0 ? "is-pending" : ""}`}
-            >
-              <strong>{n.name}</strong>
-              <span>
-                {n.total} tx · W {n.withdraw} · D {n.deposit}
-                {n.pending_weapon > 0 ? ` · pending ${n.pending_weapon}` : ""} · {n.last_at}
-              </span>
-            </div>
-          ))
+          <div className="blc-mon-input-list">
+            {notices.map((n) => (
+              <div
+                key={n.user_id}
+                className={`blc-mon-input-chip ${n.pending_weapon > 0 ? "is-pending" : ""}`}
+              >
+                <strong>{n.name}</strong>
+                <span>
+                  {n.total} input · {n.last_at}
+                  {n.pending_weapon > 0
+                    ? ` · ${n.pending_weapon} senjata belum kembali`
+                    : ""}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
-      </div>
+      </section>
 
-      <div className="blc-panel">
+      <section className="blc-mon-section">
+        <h2 className="blc-mon-section-title">Detail aktivitas</h2>
         {rows.length === 0 ? (
           <div className="blc-empty">Tidak ada transaksi.</div>
         ) : (
-          <div className="blc-list">
-            {rows.map((row) => (
-              <article key={row.id} className="blc-list-item" style={{ gridTemplateColumns: "1fr" }}>
-                <div>
-                  <h3>
-                    {row.type_label} · {row.item}{" "}
-                    <span className={`blc-badge ${row.type === "in" ? "is-in" : "is-out"}`}>
-                      x{row.quantity}
-                    </span>
-                  </h3>
-                  <p>
-                    {row.user} · {row.category} · {row.time}
-                    {row.note ? ` · ${row.note}` : ""}
-                  </p>
-                  <p>
-                    <span
-                      className={`blc-status ${
-                        row.status === "belum_dikembalikan"
-                          ? "pending"
-                          : row.status === "sudah_dikembalikan"
-                            ? "returned"
-                            : row.status === "tidak_bisa_dikembalikan"
-                              ? "lost"
-                              : ""
-                      }`}
-                    >
-                      {row.status.replaceAll("_", " ")}
-                    </span>
-                    {row.returned_at
-                      ? ` · dikembalikan ${row.returned_at}${row.returned_by ? ` oleh ${row.returned_by}` : ""}`
-                      : ""}
-                    {row.unreturnable_at
-                      ? ` · hilang ${row.unreturnable_at}${
-                          row.unreturnable_reason ? `: ${row.unreturnable_reason}` : ""
-                        }`
-                      : ""}
-                  </p>
-                  {row.needs_return ? (
-                    <div className="blc-actions">
-                      <button type="button" className="blc-btn" onClick={() => onReturn(row.id)}>
-                        Sudah dikembalikan
+          <div className="blc-mon-cards">
+            {rows.map((row) => {
+              const badge = statusBadge(row);
+              return (
+                <article key={row.id} className="blc-mon-card">
+                  <header className="blc-mon-card-head">
+                    <div>
+                      <strong className="blc-mon-card-user">{row.user}</strong>
+                      <span className="blc-mon-card-time">{row.time}</span>
+                    </div>
+                    <span className={`blc-mon-badge ${badge.klass}`}>{badge.label}</span>
+                  </header>
+
+                  <div className="blc-mon-meta">
+                    <div>
+                      <span>Barang</span>
+                      <strong>{row.item}</strong>
+                    </div>
+                    <div>
+                      <span>Kategori</span>
+                      <strong>{row.category}</strong>
+                    </div>
+                    <div>
+                      <span>Jumlah</span>
+                      <strong>x{row.quantity}</strong>
+                    </div>
+                  </div>
+
+                  {row.note ? <p className="blc-mon-note">Catatan: {row.note}</p> : null}
+                  {row.returned_at ? (
+                    <p className="blc-mon-note">
+                      Dikembalikan {row.returned_at}
+                      {row.returned_by ? ` oleh ${row.returned_by}` : ""}
+                    </p>
+                  ) : null}
+                  {row.unreturnable_at ? (
+                    <p className="blc-mon-note">
+                      Tidak bisa dikembalikan {row.unreturnable_at}
+                      {row.unreturnable_reason ? `: ${row.unreturnable_reason}` : ""}
+                    </p>
+                  ) : null}
+
+                  {canShowReturnActions(row) ? (
+                    <div className="blc-mon-card-actions">
+                      <button
+                        type="button"
+                        className="blc-btn blc-btn-return"
+                        onClick={() => {
+                          setReturnQty(row.quantity);
+                          setReturnNote("");
+                          setUiNotice({
+                            kind: "confirm-return",
+                            id: row.id,
+                            item: row.item,
+                            maxQty: row.quantity,
+                          });
+                        }}
+                      >
+                        Sudah dikembalikan ke gudang
                       </button>
                       <button
                         type="button"
-                        className="blc-btn secondary"
-                        onClick={() => onUnreturnable(row.id)}
+                        className="blc-btn blc-btn-lost"
+                        onClick={() => {
+                          setLostReason("");
+                          setUiNotice({
+                            kind: "confirm-lost",
+                            id: row.id,
+                            item: row.item,
+                          });
+                        }}
                       >
                         Tidak bisa dikembalikan
                       </button>
                     </div>
                   ) : null}
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         )}
-      </div>
+      </section>
+
+      {uiNotice?.kind === "confirm-return" ? (
+        <BlcNoticeOverlay
+          title="Kembalikan ke Gudang?"
+          message="Isi jumlah yang benar-benar dikembalikan. Stok gudang akan bertambah sesuai angka ini."
+          meta={[
+            { label: "Barang", value: uiNotice.item },
+            { label: "Withdraw", value: `x${uiNotice.maxQty}` },
+          ]}
+          primaryLabel={loading ? "Menyimpan…" : "Ya, kembalikan"}
+          secondaryLabel="Batal"
+          onPrimary={() => {
+            if (!loading) void confirmReturn();
+          }}
+          onSecondary={() => setUiNotice(null)}
+          onDismiss={() => {
+            if (!loading) setUiNotice(null);
+          }}
+        >
+          <div className="blc-honesty-box">
+            <strong>Harap jujur</strong>
+            <p>
+              Laporkan nominal yang benar-benar dikembalikan. Jangan isi lebih
+              atau kurang dari kenyataan — data ini dipakai untuk stok gudang.
+            </p>
+          </div>
+          <div className="blc-field" style={{ marginTop: "0.85rem", textAlign: "left" }}>
+            <label className="blc-label" htmlFor="return-qty">
+              Jumlah dikembalikan
+            </label>
+            <input
+              id="return-qty"
+              type="number"
+              className="blc-input"
+              min={1}
+              max={uiNotice.maxQty}
+              step={1}
+              value={returnQty}
+              disabled={loading}
+              onChange={(e) => setReturnQty(Number(e.target.value))}
+            />
+            <p className="blc-mon-note" style={{ marginTop: "0.4rem" }}>
+              Default: {uiNotice.maxQty}. Minimal 1 — isi 0 sama saja tidak
+              dikembalikan.
+            </p>
+          </div>
+          <div className="blc-field" style={{ marginTop: "0.75rem", textAlign: "left" }}>
+            <label className="blc-label" htmlFor="return-note">
+              Catatan pengembalian (opsional)
+            </label>
+            <textarea
+              id="return-note"
+              className="blc-input"
+              rows={2}
+              maxLength={500}
+              placeholder="Mis. kondisi baik, ada goresan, dll."
+              value={returnNote}
+              disabled={loading}
+              onChange={(e) => setReturnNote(e.target.value)}
+            />
+          </div>
+        </BlcNoticeOverlay>
+      ) : null}
+
+      {uiNotice?.kind === "confirm-lost" ? (
+        <BlcNoticeOverlay
+          title="Tidak Bisa Dikembalikan?"
+          message={`Isi alasan untuk "${uiNotice.item}".`}
+          primaryLabel={loading ? "Menyimpan…" : "Simpan"}
+          secondaryLabel="Batal"
+          onPrimary={() => {
+            if (!loading) void confirmLost();
+          }}
+          onSecondary={() => setUiNotice(null)}
+          onDismiss={() => {
+            if (!loading) setUiNotice(null);
+          }}
+        >
+          <div className="blc-field" style={{ marginTop: "0.85rem", textAlign: "left" }}>
+            <label className="blc-label" htmlFor="lost-reason">
+              Alasan
+            </label>
+            <textarea
+              id="lost-reason"
+              className="blc-textarea"
+              rows={3}
+              maxLength={255}
+              value={lostReason}
+              onChange={(e) => setLostReason(e.target.value)}
+              placeholder="Contoh: hilang di lapangan"
+              disabled={loading}
+            />
+          </div>
+        </BlcNoticeOverlay>
+      ) : null}
+
+      {uiNotice?.kind === "success" ? (
+        <BlcNoticeOverlay
+          title={uiNotice.title}
+          message={uiNotice.message}
+          primaryLabel="Lanjut"
+          onPrimary={closeSuccess}
+        />
+      ) : null}
+
+      {uiNotice?.kind === "error" ? (
+        <BlcNoticeOverlay
+          title="Gagal"
+          message={uiNotice.message}
+          primaryLabel="OK"
+          onPrimary={() => setUiNotice(null)}
+        />
+      ) : null}
     </>
   );
 }

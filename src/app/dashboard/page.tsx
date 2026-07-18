@@ -2,10 +2,12 @@ import Link from "next/link";
 import { BlcShell } from "@/components/BlcShell";
 import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
+import { canManageCatalog } from "@/lib/category-access";
 
 export default async function DashboardPage() {
   const session = await requireStaff();
   const isSuper = session.user.roles?.includes("superadmin");
+  const canManage = canManageCatalog(session.user.email);
 
   const [users, items, movements] = await Promise.all([
     prisma.user.count(),
@@ -14,7 +16,7 @@ export default async function DashboardPage() {
   ]);
 
   return (
-    <BlcShell showNav isStaff wide scroll>
+    <BlcShell showNav isStaff canManageCatalog={canManage} wide scroll>
       <div className="blc-page-head">
         <h1>Dashboard Admin</h1>
         <p>

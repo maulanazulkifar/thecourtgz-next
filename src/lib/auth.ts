@@ -226,6 +226,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         session.user.id = String(token.uid ?? "");
+        session.user.name = (token.name as string | undefined) ?? session.user.name;
+        session.user.email = (token.email as string | undefined) ?? session.user.email;
         session.user.roles = (token.roles as string[]) ?? [];
         session.user.permissions = (token.permissions as string[]) ?? [];
         session.user.discordId = (token.discordId as string | null | undefined) ?? undefined;

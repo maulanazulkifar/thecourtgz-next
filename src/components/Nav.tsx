@@ -10,7 +10,9 @@ const links = [
   {
     href: "/home/rekap?tab=stok",
     label: "Cek Stok",
-    match: (p: string, tab: string) => p.startsWith("/home/rekap") && tab === "stok",
+    match: (p: string, tab: string) =>
+      (p.startsWith("/home/rekap") && (tab === "stok" || !tab)) ||
+      p.startsWith("/home/audit-stok"),
   },
   {
     href: "/home/rekap?tab=deposit",
@@ -30,20 +32,32 @@ const links = [
   {
     href: "/home/kategori",
     label: "+ Kategori",
+    managerOnly: true,
     match: (p: string) => p.startsWith("/home/kategori"),
   },
   {
     href: "/home/item",
     label: "+ Item",
+    managerOnly: true,
     match: (p: string) => p.startsWith("/home/item"),
   },
 ];
 
-function NavInner({ isStaff = false }: { isStaff?: boolean }) {
+function NavInner({
+  isStaff = false,
+  canManageCatalog = false,
+}: {
+  isStaff?: boolean;
+  canManageCatalog?: boolean;
+}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const tab = searchParams.get("tab") ?? "stok";
   const [open, setOpen] = useState(false);
+
+  const visibleLinks = links.filter(
+    (link) => !link.managerOnly || canManageCatalog,
+  );
 
   return (
     <nav className={`blc-nav ${open ? "is-open" : ""}`} aria-label="Menu utama">
@@ -63,7 +77,7 @@ function NavInner({ isStaff = false }: { isStaff?: boolean }) {
         </button>
 
         <div className="blc-nav-menu">
-          {links.map((link) => (
+          {visibleLinks.map((link) => (
             <Link
               key={link.href}
               href={link.href}
@@ -99,10 +113,16 @@ function NavInner({ isStaff = false }: { isStaff?: boolean }) {
   );
 }
 
-export function Nav({ isStaff = false }: { isStaff?: boolean }) {
+export function Nav({
+  isStaff = false,
+  canManageCatalog = false,
+}: {
+  isStaff?: boolean;
+  canManageCatalog?: boolean;
+}) {
   return (
     <Suspense fallback={<nav className="blc-nav" />}>
-      <NavInner isStaff={isStaff} />
+      <NavInner isStaff={isStaff} canManageCatalog={canManageCatalog} />
     </Suspense>
   );
 }

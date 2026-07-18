@@ -5,10 +5,12 @@ import { prisma } from "@/lib/prisma";
 import { getStockVersion } from "@/lib/stock-version";
 import { discordAvatarUrl } from "@/lib/discord";
 import { isStaff } from "@/lib/roles";
+import { canManageCatalog } from "@/lib/category-access";
 
 export default async function HomePage() {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
+  const canManage = canManageCatalog(session.user.email);
 
   const categories = await prisma.category.findMany({
     include: {
@@ -44,7 +46,7 @@ export default async function HomePage() {
     "/image/blc.png";
 
   return (
-    <BlcShell showNav isStaff={staff}>
+    <BlcShell showNav isStaff={staff} canManageCatalog={canManage}>
       <PortalForm
         userName={session.user.name ?? "Member"}
         avatarUrl={avatar}

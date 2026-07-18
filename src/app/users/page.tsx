@@ -4,9 +4,11 @@ import { requireSuperadmin } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { SPATIE_USER_MORPH } from "@/lib/constants";
 import { DeleteUserButton } from "@/components/DeleteUserButton";
+import { canManageCatalog } from "@/lib/category-access";
 
 export default async function UsersPage() {
-  await requireSuperadmin();
+  const session = await requireSuperadmin();
+  const canManage = canManageCatalog(session.user.email);
 
   const users = await prisma.user.findMany({
     orderBy: { id: "desc" },
@@ -29,7 +31,7 @@ export default async function UsersPage() {
   }
 
   return (
-    <BlcShell showNav isStaff wide scroll>
+    <BlcShell showNav isStaff canManageCatalog={canManage} wide scroll>
       <div className="blc-page-head">
         <h1>Users</h1>
         <p>Kelola akun admin / member.</p>

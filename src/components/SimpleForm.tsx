@@ -18,10 +18,11 @@ export function SimpleForm({
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const form = e.currentTarget;
     setLoading(true);
     setMessage(null);
     setError(null);
-    const fd = new FormData(e.currentTarget);
+    const fd = new FormData(form);
     const result = await action(fd);
     setLoading(false);
     if (!result.ok) {
@@ -29,7 +30,7 @@ export function SimpleForm({
       return;
     }
     setMessage(result.message ?? "Berhasil.");
-    e.currentTarget.reset();
+    form.reset();
   }
 
   return (

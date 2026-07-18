@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { storeMovementAction } from "@/app/actions/inventory";
 
 type ItemOpt = { id: number; text: string; name: string; stock: number };
@@ -40,6 +41,11 @@ export function PortalForm({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [successTx, setSuccessTx] = useState<SuccessTx | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const items = useMemo(
     () => itemsByCategory[categoryId] ?? [],
@@ -258,42 +264,45 @@ export function PortalForm({
         </form>
       </div>
 
-      {successTx ? (
-        <div className="blc-success-overlay" onClick={() => setSuccessTx(null)}>
-          <div className="blc-success-sheet" onClick={(e) => e.stopPropagation()}>
-            <h3>{successTx.label} Berhasil</h3>
-            <p style={{ color: "#e8e0d0" }}>{successTx.message}</p>
-            <div className="blc-success-meta">
-              <div>
-                <span>Item</span>
-                <strong>{successTx.item}</strong>
-              </div>
-              <div>
-                <span>Jumlah</span>
-                <strong>x{successTx.quantity}</strong>
-              </div>
-              <div>
-                <span>Stok sekarang</span>
-                <strong>{successTx.stock}</strong>
-              </div>
-              {successTx.note ? (
-                <div>
-                  <span>Catatan</span>
-                  <strong>{successTx.note}</strong>
+      {mounted && successTx
+        ? createPortal(
+            <div className="blc-success-overlay" onClick={() => setSuccessTx(null)}>
+              <div className="blc-success-sheet" onClick={(e) => e.stopPropagation()}>
+                <h3>{successTx.label} Berhasil</h3>
+                <p style={{ color: "#e8e0d0" }}>{successTx.message}</p>
+                <div className="blc-success-meta">
+                  <div>
+                    <span>Item</span>
+                    <strong>{successTx.item}</strong>
+                  </div>
+                  <div>
+                    <span>Jumlah</span>
+                    <strong>x{successTx.quantity}</strong>
+                  </div>
+                  <div>
+                    <span>Stok sekarang</span>
+                    <strong>{successTx.stock}</strong>
+                  </div>
+                  {successTx.note ? (
+                    <div>
+                      <span>Catatan</span>
+                      <strong>{successTx.note}</strong>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              className="blc-btn"
-              style={{ marginTop: "1rem" }}
-              onClick={() => setSuccessTx(null)}
-            >
-              Lanjut
-            </button>
-          </div>
-        </div>
-      ) : null}
+                <button
+                  type="button"
+                  className="blc-btn"
+                  style={{ marginTop: "1rem" }}
+                  onClick={() => setSuccessTx(null)}
+                >
+                  Lanjut
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

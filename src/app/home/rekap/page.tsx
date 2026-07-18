@@ -1,83 +1,211 @@
 import Link from "next/link";
 import { BlcShell } from "@/components/BlcShell";
+import { StockAuditClient } from "@/components/StockAuditClient";
 import { requireSession } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { isStaff } from "@/lib/roles";
+import { canManageCatalog } from "@/lib/category-access";
+import { getMovementTotals, getStockRecapRows } from "@/lib/inventory";
+import { loadItemAuditAction } from "@/app/actions/audit";
 import { format } from "date-fns";
+
+const PAGE_SIZE = 40;
+
+const RETURN_NOTE_MARKER = "Catatan pengembalian:";
+
+function parseReturnNote(itemName: string, note: string | null) {
+  let body = (note ?? "").trim();
+  let userNote: string | null = null;
+
+  const markerIdx = body.indexOf(RETURN_NOTE_MARKER);
+  if (markerIdx >= 0) {
+    userNote = body.slice(markerIdx + RETURN_NOTE_MARKER.length).trim() || null;
+    body = body.slice(0, markerIdx).trim();
+  }
+
+  if (body.includes("telah dikembalikan")) {
+    return { summary: body, userNote };
+  }
+
+  const partial = body.match(/dikembalikan\s+(\d+)\s+dari\s+(\d+)/i);
+  const by = body.match(/oleh\s+([^(]+?)(?:\s*\(|$)/i);
+  const who = by?.[1]?.trim() || "seseorang";
+
+  if (partial) {
+    return {
+      summary: `${itemName} telah dikembalikan oleh ${who} sejumlah ${partial[1]} dari ${partial[2]}.`,
+      userNote,
+    };
+  }
+
+  if (body.includes("Pengembalian dari withdraw")) {
+    return {
+      summary: `${itemName} telah dikembalikan oleh ${who}.`,
+      userNote,
+    };
+  }
+
+  return {
+    summary: body || `${itemName} telah dikembalikan.`,
+    userNote,
+  };
+}
+
+function movementSource(m: {
+  type: string;
+  purpose: string | null;
+  note: string | null;
+  itemName: string;
+}) {
+  if (m.purpose === "return") {
+    const parsed = parseReturnNote(m.itemName, m.note);
+    return {
+      label: "Pengembalian",
+      hint: parsed.summary,
+      note: parsed.userNote,
+      klass: "is-deposit",
+    };
+  }
+  if (m.note?.includes("Stok awal")) {
+    return {
+      label: "Stok awal",
+      hint: "Deposit otomatis saat item ditambahkan",
+      note: null as string | null,
+      klass: "is-deposit",
+    };
+  }
+  if (m.note?.includes("Penyesuaian")) {
+    return {
+      label: "Penyesuaian",
+      hint:
+        m.type === "in"
+          ? "Naik karena edit stok item"
+          : "Turun karena edit stok item",
+      note: null as string | null,
+      klass: "is-pending-return",
+    };
+  }
+  if (m.purpose === "deposit" || m.type === "in") {
+    return {
+      label: "Deposit",
+      hint: "Input deposit / masuk biasa",
+      note: m.note,
+      klass: "is-deposit",
+    };
+  }
+  return {
+    label: "Withdraw",
+    hint: "Input withdraw / keluar biasa",
+    note: m.note,
+    klass: "is-withdraw",
+  };
+}
 
 export default async function RecapPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; page?: string }>;
 }) {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
+  const canFix = canManageCatalog(session.user.email);
   const params = await searchParams;
   let tab = params.tab ?? "stok";
   if (!["stok", "deposit", "withdraw"].includes(tab)) tab = "stok";
+  const page = Math.max(1, Number(params.page) || 1);
 
-  const totals = await prisma.stockMovement.groupBy({
-    by: ["type"],
-    _sum: { quantity: true },
-  });
-  const depositTotal = totals.find((t) => t.type === "in")?._sum.quantity ?? 0;
-  const withdrawTotal = totals.find((t) => t.type === "out")?._sum.quantity ?? 0;
+  const [{ depositTotal, withdrawTotal }, stockRows] = await Promise.all([
+    getMovementTotals(),
+    getStockRecapRows(),
+  ]);
 
-  const items = await prisma.item.findMany({
-    include: { category: true },
-    orderBy: { name: "asc" },
-  });
-
-  const perItem = await prisma.stockMovement.groupBy({
-    by: ["itemId", "type"],
-    _sum: { quantity: true },
-  });
+  const stockTotal = stockRows.reduce((sum, r) => sum + r.stock, 0);
+  const formulaSisa = depositTotal - withdrawTotal;
+  const globalGap = stockTotal - formulaSisa;
+  const mismatchRows = stockRows.filter((r) => r.gap !== 0);
+  const categories = [...new Set(stockRows.map((r) => r.category))].sort((a, b) =>
+    a.localeCompare(b),
+  );
 
   const movements =
     tab === "stok"
       ? []
       : await prisma.stockMovement.findMany({
           where: { type: tab === "deposit" ? "in" : "out" },
-          include: { item: true, user: true },
+          select: {
+            id: true,
+            type: true,
+            quantity: true,
+            note: true,
+            purpose: true,
+            movementDate: true,
+            item: { select: { name: true } },
+            user: { select: { name: true } },
+          },
           orderBy: [{ movementDate: "desc" }, { id: "desc" }],
-          take: 80,
+          take: PAGE_SIZE,
+          skip: (page - 1) * PAGE_SIZE,
         });
 
-  function itemTotals(itemId: bigint) {
-    const rows = perItem.filter((p) => p.itemId === itemId);
-    return {
-      in: rows.find((r) => r.type === "in")?._sum.quantity ?? 0,
-      out: rows.find((r) => r.type === "out")?._sum.quantity ?? 0,
-    };
-  }
+  const movementCount =
+    tab === "stok"
+      ? 0
+      : await prisma.stockMovement.count({
+          where: { type: tab === "deposit" ? "in" : "out" },
+        });
+  const totalPages = Math.max(1, Math.ceil(movementCount / PAGE_SIZE));
 
   return (
-    <BlcShell showNav isStaff={staff} wide scroll>
+    <BlcShell showNav isStaff={staff} canManageCatalog={canFix} wide scroll>
       <div className="blc-page-head">
-        <h1>Rekapitulasi Stok</h1>
-        <p>Ringkas stok sekarang, deposit, dan withdraw — update dari semua anggota.</p>
+        <h1>Cek Stok</h1>
+        <p>
+          Lihat sisa stok, filter kategori/item, dan audit transaksi kalau ada
+          selisih.
+        </p>
       </div>
 
       <div className="blc-stat-grid">
         <div className="blc-stat">
-          <span>Item</span>
-          <strong>{items.length}</strong>
+          <span>Sisa Sekarang</span>
+          <strong>{stockTotal.toLocaleString("id-ID")}</strong>
         </div>
         <div className="blc-stat">
-          <span>Total Deposit</span>
+          <span>Total Masuk</span>
           <strong>{depositTotal.toLocaleString("id-ID")}</strong>
         </div>
         <div className="blc-stat">
-          <span>Total Withdraw</span>
+          <span>Total Keluar</span>
           <strong>{withdrawTotal.toLocaleString("id-ID")}</strong>
         </div>
       </div>
 
+      <div className={`blc-mon-summary ${globalGap !== 0 ? "is-warn" : ""}`}>
+        Masuk <strong>{depositTotal.toLocaleString("id-ID")}</strong> − Keluar{" "}
+        <strong>{withdrawTotal.toLocaleString("id-ID")}</strong> = Ledger{" "}
+        <strong className="blc-mon-summary-hl">
+          {formulaSisa.toLocaleString("id-ID")}
+        </strong>
+        {globalGap === 0 ? (
+          <span className="blc-mon-summary-note"> · seimbang dengan sisa stok</span>
+        ) : (
+          <span className="blc-mon-summary-note">
+            {" "}
+            · selisih vs stok:{" "}
+            <strong style={{ color: "#efb0b0" }}>
+              {globalGap > 0 ? "+" : ""}
+              {globalGap.toLocaleString("id-ID")}
+            </strong>{" "}
+            ({mismatchRows.length} item)
+          </span>
+        )}
+      </div>
+
       <div className="blc-tabs" role="tablist">
         {[
-          ["stok", "Stok Sekarang"],
-          ["deposit", "Deposit"],
-          ["withdraw", "Withdraw"],
+          ["stok", "Sisa & Audit"],
+          ["deposit", "Deposit / Masuk"],
+          ["withdraw", "Withdraw / Keluar"],
         ].map(([key, label]) => (
           <Link
             key={key}
@@ -89,56 +217,91 @@ export default async function RecapPage({
         ))}
       </div>
 
-      <div className="blc-panel">
-        {tab === "stok" ? (
-          items.length === 0 ? (
+      {tab === "stok" ? (
+        <StockAuditClient
+          rows={stockRows}
+          categories={categories}
+          canFix={canFix}
+          loadAudit={loadItemAuditAction}
+          compactHeader
+        />
+      ) : (
+        <div className="blc-panel">
+          {movements.length === 0 ? (
             <div className="blc-empty">
-              Belum ada item. Tambah item dulu lewat menu <strong>+ Item</strong>.
+              Belum ada riwayat {tab === "deposit" ? "deposit" : "withdraw"}.
             </div>
           ) : (
-            <div className="blc-list">
-              {items.map((item) => {
-                const stats = itemTotals(item.id);
-                return (
-                  <article key={String(item.id)} className="blc-list-item">
-                    <div>
-                      <h3>{item.name}</h3>
-                      <p>
-                        {item.category?.name ?? "Tanpa kategori"} · masuk{" "}
-                        {stats.in.toLocaleString("id-ID")} · keluar{" "}
-                        {stats.out.toLocaleString("id-ID")}
-                      </p>
-                    </div>
-                    <div className="blc-badge">{item.stock.toLocaleString("id-ID")}</div>
-                  </article>
-                );
-              })}
-            </div>
-          )
-        ) : movements.length === 0 ? (
-          <div className="blc-empty">
-            Belum ada riwayat {tab === "deposit" ? "deposit" : "withdraw"}.
-          </div>
-        ) : (
-          <div className="blc-list">
-            {movements.map((m) => (
-              <article key={String(m.id)} className="blc-list-item">
-                <div>
-                  <h3>{m.item?.name ?? "Item dihapus"}</h3>
-                  <p>
-                    {m.user?.name ?? "—"} · {format(m.movementDate, "d MMM yyyy HH:mm")}
-                    {m.note ? ` · ${m.note}` : ""}
-                  </p>
+            <>
+              <div className="blc-list">
+                {movements.map((m) => {
+                  const itemName = m.item?.name ?? "Item dihapus";
+                  const source = movementSource({
+                    type: m.type,
+                    purpose: m.purpose,
+                    note: m.note,
+                    itemName,
+                  });
+                  return (
+                    <article key={String(m.id)} className="blc-list-item blc-rekap-tx">
+                      <div>
+                        <h3>
+                          {itemName}{" "}
+                          <span className={`blc-mon-badge ${source.klass}`}>
+                            {source.label}
+                          </span>
+                        </h3>
+                        <p>
+                          {m.user?.name ?? "—"} ·{" "}
+                          {format(m.movementDate, "d MMM yyyy HH:mm")}
+                        </p>
+                        <p className="blc-rekap-source">{source.hint}</p>
+                        {source.note ? (
+                          <p className="blc-mon-note blc-rekap-note">
+                            Catatan: {source.note}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className={`blc-badge ${m.type === "in" ? "is-in" : "is-out"}`}>
+                        {m.type === "in" ? "+" : "-"}
+                        {m.quantity.toLocaleString("id-ID")}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              {totalPages > 1 ? (
+                <div
+                  className="blc-actions"
+                  style={{ justifyContent: "center", marginTop: "1rem" }}
+                >
+                  {page > 1 ? (
+                    <Link
+                      className="blc-btn secondary"
+                      href={`/home/rekap?tab=${tab}&page=${page - 1}`}
+                      style={{ width: "auto" }}
+                    >
+                      Sebelumnya
+                    </Link>
+                  ) : null}
+                  <span className="blc-mon-note">
+                    Halaman {page}/{totalPages}
+                  </span>
+                  {page < totalPages ? (
+                    <Link
+                      className="blc-btn secondary"
+                      href={`/home/rekap?tab=${tab}&page=${page + 1}`}
+                      style={{ width: "auto" }}
+                    >
+                      Selanjutnya
+                    </Link>
+                  ) : null}
                 </div>
-                <div className={`blc-badge ${m.type === "in" ? "is-in" : "is-out"}`}>
-                  {m.type === "in" ? "+" : "-"}
-                  {m.quantity.toLocaleString("id-ID")}
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
     </BlcShell>
   );
 }

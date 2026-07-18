@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { WEAPON_CATEGORY_NAME } from "@/lib/constants";
+import { isWeaponCategoryName } from "@/lib/constants";
 import { sanitizeText } from "@/lib/sanitize";
 import { bumpStockVersion } from "@/lib/stock-version";
 import { format } from "date-fns";
@@ -97,13 +97,16 @@ export async function createMovement(input: MovementInput) {
 }
 
 function isWeaponWithdraw(type: string, categoryName?: string | null) {
-  return (
-    type === "out" &&
-    (categoryName ?? "").trim().toLowerCase() === WEAPON_CATEGORY_NAME.toLowerCase()
-  );
+  return type === "out" && isWeaponCategoryName(categoryName);
 }
 
-export async function markReturned(movementId: number, actorId: bigint, actorName: string) {
+export async function markReturned(
+  movementId: number,
+  actorId: bigint,
+  actorName: string,
+  returnQtyRaw?: number,
+  returnNoteRaw?: string | null,
+) {
   try {
     await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
@@ -118,10 +121,12 @@ export async function markReturned(movementId: number, actorId: bigint, actorNam
           unreturnable_at: Date | null;
           category_name: string | null;
           user_name: string | null;
+          item_name: string;
         }[]
       >`
         SELECT sm.id, sm.item_id, sm.user_id, sm.type, sm.quantity, sm.to_whom,
-               sm.returned_at, sm.unreturnable_at, c.name AS category_name, u.name AS user_name
+               sm.returned_at, sm.unreturnable_at, c.name AS category_name, u.name AS user_name,
+               i.name AS item_name
         FROM stock_movements sm
         JOIN items i ON i.id = sm.item_id
         LEFT JOIN categories c ON c.id = i.category_id
@@ -143,12 +148,33 @@ export async function markReturned(movementId: number, actorId: bigint, actorNam
       }
       if (!isWeaponWithdraw(withdraw.type, withdraw.category_name)) {
         throw new Error(
-          "Hanya withdraw kategori Senjata yang wajib / bisa ditandai pengembalian.",
+          "Hanya withdraw kategori yang mengandung Weapon/Senjata yang bisa ditandai pengembalian.",
         );
       }
 
+      const maxQty = withdraw.quantity;
+      const qty =
+        returnQtyRaw === undefined || returnQtyRaw === null
+          ? maxQty
+          : Number(returnQtyRaw);
+
+      if (!Number.isInteger(qty) || qty < 1) {
+        throw new Error(
+          "Jumlah 0 sama saja tidak dikembalikan. Isi minimal 1, atau pakai \"Tidak bisa dikembalikan\".",
+        );
+      }
+      if (qty > maxQty) {
+        throw new Error(`Jumlah dikembalikan tidak boleh lebih dari ${maxQty}.`);
+      }
+
+      const returnedBy =
+        withdraw.user_name?.trim() || withdraw.to_whom?.trim() || "seseorang";
+      const itemName = withdraw.item_name?.trim() || "Item";
+      const summary = `${itemName} telah dikembalikan oleh ${returnedBy} sejumlah ${qty} dari ${maxQty}.`;
+      const extra = sanitizeText(returnNoteRaw ?? null, 500);
+      const note = extra ? `${summary} Catatan pengembalian: ${extra}` : summary;
+
       await tx.$queryRaw`SELECT id FROM items WHERE id = ${withdraw.item_id} FOR UPDATE`;
-      const qty = withdraw.quantity;
 
       await tx.$executeRaw`
         UPDATE items SET stock = stock + ${qty}, updated_at = NOW()
@@ -163,9 +189,7 @@ export async function markReturned(movementId: number, actorId: bigint, actorNam
           quantity: qty,
           toWhom: actorName.slice(0, 100),
           purpose: "return",
-          note: `Pengembalian dari withdraw #${withdraw.id} oleh ${
-            withdraw.user_name ?? withdraw.to_whom ?? "—"
-          }`,
+          note,
           movementDate: new Date(),
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -222,7 +246,9 @@ export async function markUnreturnable(
       const withdraw = locked[0];
       if (!withdraw) throw new Error("Transaksi tidak ditemukan.");
       if (withdraw.type !== "out" || !isWeaponWithdraw(withdraw.type, withdraw.category_name)) {
-        throw new Error("Hanya withdraw kategori Senjata yang bisa ditandai.");
+        throw new Error(
+          "Hanya withdraw kategori yang mengandung Weapon/Senjata yang bisa ditandai.",
+        );
       }
       if (withdraw.returned_at) {
         throw new Error("Senjata ini sudah dikembalikan, tidak bisa ditandai hilang.");
@@ -249,24 +275,56 @@ export async function markUnreturnable(
   }
 }
 
+export type MonitoringFilters = {
+  memberId?: string;
+  categoryId?: string;
+};
+
+export async function getMonitoringFilterOptions() {
+  const [categories, members] = await Promise.all([
+    prisma.category.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+    prisma.user.findMany({
+      where: { stockMovements: { some: {} } },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  return {
+    categories: categories.map((c) => ({ id: String(c.id), name: c.name })),
+    members: members.map((u) => ({
+      id: String(u.id),
+      name: u.name?.trim() || `User #${u.id}`,
+    })),
+  };
+}
+
 export async function buildMonitoringPayload(
-  fromDate: Date,
-  toDate: Date,
-  member = "",
+  fromDate: Date | null,
+  toDate: Date | null,
+  filters: MonitoringFilters | string = {},
 ) {
-  const memberTrim = member.trim();
+  // backward compat: old call signature used member name string
+  const normalized: MonitoringFilters =
+    typeof filters === "string" ? { memberId: filters } : filters;
+
+  const memberId = (normalized.memberId ?? "").trim();
+  const categoryId = (normalized.categoryId ?? "").trim();
+  const memberBig =
+    memberId && /^\d+$/.test(memberId) ? BigInt(memberId) : null;
+  const categoryBig =
+    categoryId && /^\d+$/.test(categoryId) ? BigInt(categoryId) : null;
 
   const movements = await prisma.stockMovement.findMany({
     where: {
-      movementDate: { gte: fromDate, lte: toDate },
-      ...(memberTrim
-        ? {
-            OR: [
-              { toWhom: { contains: memberTrim, mode: "insensitive" } },
-              { user: { name: { contains: memberTrim, mode: "insensitive" } } },
-            ],
-          }
+      ...(fromDate && toDate
+        ? { movementDate: { gte: fromDate, lte: toDate } }
         : {}),
+      ...(memberBig ? { userId: memberBig } : {}),
+      ...(categoryBig ? { item: { categoryId: categoryBig } } : {}),
     },
     include: {
       item: { include: { category: true } },
@@ -275,7 +333,7 @@ export async function buildMonitoringPayload(
       unreturnableByUser: true,
     },
     orderBy: [{ movementDate: "desc" }, { id: "desc" }],
-    take: 200,
+    take: 300,
   });
 
   const byUser = new Map<string, typeof movements>();
@@ -325,6 +383,7 @@ export async function buildMonitoringPayload(
             : "Deposit"
           : "Withdraw",
       user: row.user?.name ?? row.toWhom ?? "—",
+      user_id: Number(row.userId),
       item: row.item?.name ?? "Item dihapus",
       category: row.item?.category?.name ?? "—",
       quantity: row.quantity,
@@ -370,4 +429,300 @@ export async function stockPayload() {
   }
 
   return byCategory;
+}
+
+/**
+ * Analisis selisih stok item vs ledger (masuk - keluar) — read-only, ringan.
+ */
+export async function getStockRecapRows() {
+  const rows = await prisma.$queryRaw<
+    {
+      id: bigint;
+      name: string;
+      stock: number;
+      category: string | null;
+      masuk: number;
+      keluar: number;
+    }[]
+  >`
+    SELECT
+      i.id,
+      i.name,
+      i.stock,
+      c.name AS category,
+      COALESCE(SUM(CASE WHEN sm.type = 'in' THEN sm.quantity ELSE 0 END), 0)::int AS masuk,
+      COALESCE(SUM(CASE WHEN sm.type = 'out' THEN sm.quantity ELSE 0 END), 0)::int AS keluar
+    FROM items i
+    LEFT JOIN categories c ON c.id = i.category_id
+    LEFT JOIN stock_movements sm ON sm.item_id = i.id
+    GROUP BY i.id, c.name
+    ORDER BY i.name ASC
+  `;
+
+  return rows.map((r) => {
+    const hitung = r.masuk - r.keluar;
+    const gap = r.stock - hitung;
+    let reason: string | null = null;
+    if (gap > 0) {
+      reason =
+        "Stok item lebih tinggi dari riwayat transaksi (ada stok tanpa deposit/ledger).";
+    } else if (gap < 0) {
+      reason =
+        "Riwayat masuk lebih banyak dari stok (penyesuaian dobel, atau stok diedit tanpa withdraw).";
+    }
+    return {
+      id: Number(r.id),
+      name: r.name,
+      category: r.category ?? "Tanpa kategori",
+      stock: r.stock,
+      masuk: r.masuk,
+      keluar: r.keluar,
+      hitung,
+      gap,
+      reason,
+    };
+  });
+}
+
+export async function getMovementTotals() {
+  const totals = await prisma.$queryRaw<{ type: string; qty: number }[]>`
+    SELECT type, COALESCE(SUM(quantity), 0)::int AS qty
+    FROM stock_movements
+    GROUP BY type
+  `;
+  const depositTotal = totals.find((t) => t.type === "in")?.qty ?? 0;
+  const withdrawTotal = totals.find((t) => t.type === "out")?.qty ?? 0;
+  return { depositTotal, withdrawTotal };
+}
+
+export async function getItemAuditTrail(itemId: number, limit = 80) {
+  const id = BigInt(itemId);
+  const item = await prisma.item.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      stock: true,
+      sku: true,
+      createdAt: true,
+      updatedAt: true,
+      category: { select: { id: true, name: true } },
+    },
+  });
+  if (!item) return null;
+
+  const [movements, totals] = await Promise.all([
+    prisma.stockMovement.findMany({
+      where: { itemId: id },
+      select: {
+        id: true,
+        type: true,
+        purpose: true,
+        quantity: true,
+        note: true,
+        movementDate: true,
+        user: { select: { name: true } },
+      },
+      orderBy: [{ movementDate: "asc" }, { id: "asc" }],
+      take: limit,
+    }),
+    prisma.$queryRaw<{ masuk: number; keluar: number }[]>`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0)::int AS masuk,
+        COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0)::int AS keluar
+      FROM stock_movements
+      WHERE item_id = ${id}
+    `,
+  ]);
+
+  const masuk = totals[0]?.masuk ?? 0;
+  const keluar = totals[0]?.keluar ?? 0;
+  const hitung = masuk - keluar;
+  const gap = item.stock - hitung;
+  let reason: string | null = null;
+  if (gap > 0) {
+    reason =
+      "Stok item lebih tinggi dari riwayat transaksi (ada stok tanpa deposit/ledger).";
+  } else if (gap < 0) {
+    reason =
+      "Riwayat masuk lebih banyak dari stok (penyesuaian dobel, atau stok diedit tanpa withdraw).";
+  }
+
+  const category = item.category?.name ?? "Tanpa kategori";
+
+  function actionMeta(m: {
+    type: string;
+    purpose: string | null;
+    note: string | null;
+  }) {
+    if (m.purpose === "return") {
+      return { label: "Pengembalian", kind: "return" as const, suspect: false };
+    }
+    if (m.note?.includes("Penyesuaian")) {
+      return { label: "Penyesuaian", kind: "adjust" as const, suspect: true };
+    }
+    if (m.note?.includes("Stok awal")) {
+      return { label: "Stok awal", kind: "initial" as const, suspect: false };
+    }
+    if (m.purpose === "deposit" || m.type === "in") {
+      return { label: "Deposit", kind: "deposit" as const, suspect: false };
+    }
+    return { label: "Withdraw", kind: "withdraw" as const, suspect: false };
+  }
+
+  let running = 0;
+  const enriched = movements.map((m) => {
+    const meta = actionMeta(m);
+    running += m.type === "in" ? m.quantity : -m.quantity;
+    return {
+      id: Number(m.id),
+      type: m.type,
+      purpose: m.purpose,
+      quantity: m.quantity,
+      note: m.note,
+      time: m.movementDate.toISOString(),
+      user: m.user?.name?.trim() || "—",
+      label: meta.label,
+      kind: meta.kind,
+      suspect: meta.suspect,
+      runningAfter: running,
+    };
+  });
+
+  // Timeline di UI: terbaru dulu, tapi hitung running dari lama→baru di atas
+  const timeline = [...enriched].reverse();
+
+  const first = enriched[0] ?? null;
+  const last = enriched[enriched.length - 1] ?? null;
+  const suspects = enriched.filter((m) => m.suspect);
+  const firstSuspect = suspects[0] ?? null;
+
+  let likelySince: string | null = null;
+  let likelySinceBy: string | null = null;
+  let likelySinceLabel: string | null = null;
+  let tip =
+    "Tidak ada selisih. Semua transaksi di bawah bisa ditelusuri siapa yang menginput.";
+
+  if (gap !== 0) {
+    if (firstSuspect) {
+      likelySince = firstSuspect.time;
+      likelySinceBy = firstSuspect.user;
+      likelySinceLabel = firstSuspect.label;
+      tip =
+        gap > 0
+          ? "Ada penyesuaian stok yang perlu dicek. Selisih positif biasanya muncul sejak edit stok / penyesuaian tanpa ledger yang cocok."
+          : "Ada penyesuaian stok yang perlu dicek. Selisih negatif biasanya dari penyesuaian naik yang dobel, atau stok diturunkan tanpa withdraw.";
+    } else if (item.updatedAt) {
+      likelySince = item.updatedAt.toISOString();
+      likelySinceBy = last?.user ?? null;
+      likelySinceLabel = "Perubahan stok item";
+      tip =
+        gap > 0
+          ? "Stok lebih tinggi dari ledger. Cek kapan stok terakhir diubah dan siapa yang menginput deposit/withdraw terakhir."
+          : "Ledger lebih tinggi dari stok. Cek transaksi masuk terakhir dan apakah stok pernah diedit manual.";
+    } else if (first) {
+      likelySince = first.time;
+      likelySinceBy = first.user;
+      likelySinceLabel = first.label;
+      tip = "Selisih terdeteksi. Telusuri transaksi dari yang paling lama, perhatikan siapa yang menginput.";
+    } else {
+      tip =
+        "Ada selisih tapi belum ada riwayat transaksi. Stok kemungkinan diisi tanpa deposit.";
+      if (item.createdAt) {
+        likelySince = item.createdAt.toISOString();
+        likelySinceLabel = "Item dibuat";
+      }
+    }
+  }
+
+  return {
+    item: {
+      id: Number(item.id),
+      name: item.name,
+      sku: item.sku,
+      stock: item.stock,
+      categoryId: item.category ? Number(item.category.id) : null,
+      category,
+      updatedAt: item.updatedAt?.toISOString() ?? null,
+      createdAt: item.createdAt?.toISOString() ?? null,
+    },
+    recap: {
+      id: Number(item.id),
+      name: item.name,
+      category,
+      stock: item.stock,
+      masuk,
+      keluar,
+      hitung,
+      gap,
+      reason,
+    },
+    insight: {
+      tip,
+      gap,
+      stockUpdatedAt: item.updatedAt?.toISOString() ?? null,
+      firstTxAt: first?.time ?? null,
+      firstTxBy: first?.user ?? null,
+      lastTxAt: last?.time ?? null,
+      lastTxBy: last?.user ?? null,
+      lastTxLabel: last?.label ?? null,
+      suspectCount: suspects.length,
+      likelySince,
+      likelySinceBy,
+      likelySinceLabel,
+    },
+    movements: timeline,
+  };
+}
+
+/**
+ * Samakan stok item ke ledger (masuk - keluar). Aman & idempoten.
+ * Juga hapus penyesuaian stok awal yang dobel (race repair lama).
+ */
+export async function reconcileStockLedger() {
+  // Hapus duplikat penyesuaian yang tercipta di detik yang sama
+  await prisma.$executeRaw`
+    DELETE FROM stock_movements a
+    USING stock_movements b
+    WHERE a.id > b.id
+      AND a.item_id = b.item_id
+      AND a.type = 'in'
+      AND a.purpose = 'deposit'
+      AND a.note IS NOT NULL
+      AND b.note IS NOT NULL
+      AND a.note LIKE 'Penyesuaian stok awal%'
+      AND b.note LIKE 'Penyesuaian stok awal%'
+      AND a.quantity = b.quantity
+      AND a.movement_date = b.movement_date
+  `;
+
+  const updated = await prisma.$executeRaw`
+    WITH ledger AS (
+      SELECT item_id,
+        COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS masuk,
+        COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0) AS keluar
+      FROM stock_movements
+      GROUP BY item_id
+    )
+    UPDATE items i
+    SET stock = GREATEST(0, (COALESCE(l.masuk, 0) - COALESCE(l.keluar, 0))::int),
+        updated_at = NOW()
+    FROM ledger l
+    WHERE l.item_id = i.id
+      AND i.stock <> (COALESCE(l.masuk, 0) - COALESCE(l.keluar, 0))
+  `;
+
+  // Item tanpa movement sama sekali → biarkan; gap positif tanpa movement
+  // ditangani terpisah hanya jika diminta (jangan auto-deposit lagi di page load)
+
+  await bumpStockVersion();
+  return Number(updated);
+}
+
+/**
+ * @deprecated Jangan panggil di page load — rawan race & berat.
+ * Gunakan reconcileStockLedger() lewat tombol eksplisit.
+ */
+export async function repairMissingStockDeposits(actorUserId: bigint, actorName: string) {
+  return reconcileStockLedger();
 }
