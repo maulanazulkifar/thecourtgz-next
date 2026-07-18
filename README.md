@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# BLACK LOTUS COURT — Next.js
 
-## Getting Started
+Port mandiri dari aplikasi Laravel `thecourtgz`. UI BLC (hitam-emas) sama, database PostgreSQL/Supabase **yang sama**.
 
-First, run the development server:
+## Stack
+
+- Next.js 16 (App Router) + TypeScript + Tailwind v4
+- Auth.js (NextAuth v5) — Discord OAuth + Credentials admin
+- Prisma 7 → tabel Laravel existing (tanpa migrate destruktif)
+- Spatie roles/permissions dibaca lewat tabel `roles` / `model_has_roles` (`model_type = App\Models\User`)
+
+## Setup lokal
+
+Prasyarat: **Node.js 20+** (disarankan 22).
 
 ```bash
+cd thecourtgz-next
+npm install
+cp .env.example .env
+# isi DATABASE_URL, AUTH_SECRET, Discord, dll.
+npx prisma generate
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Buka [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Discord Developer Portal
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Tambahkan Redirect URI:
 
-## Learn More
+```
+http://localhost:3000/api/auth/callback/discord
+```
 
-To learn more about Next.js, take a look at the following resources:
+(Produksi: `https://domain-anda.com/api/auth/callback/discord`)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Env penting
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Key | Keterangan |
+|---|---|
+| `DATABASE_URL` | Supabase pooler (`sslmode=require`) |
+| `AUTH_SECRET` | Random panjang untuk JWT session |
+| `AUTH_DISCORD_ID` / `AUTH_DISCORD_SECRET` | OAuth Discord |
+| `RECAPTCHA_*` | Opsional lokal; wajib di production admin login |
+| `CACHE_PREFIX` | Default `black-lotus-court-cache-` (kompatibel Laravel) |
 
-## Deploy on Vercel
+## Fitur yang di-port
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `/` → Discord login (member)
+- `/admin/login` → email/password + reCAPTCHA (staff)
+- `/home` transaksi deposit/withdraw + poll stok
+- `/home/rekap`, `/home/monitoring` (+ return / unreturnable Senjata)
+- `/home/kategori`, `/home/item`
+- `/dashboard`, `/users` (superadmin)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Cutover dari Laravel
+
+1. Deploy Next.js, set env ke DB yang sama
+2. Update Discord Redirect URI ke domain Next
+3. **Matikan** Laravel agar tidak dual-write stok
+4. User harus login ulang (session Laravel tidak kompatibel)
+
+Jangan jalankan `prisma migrate` terhadap DB production — schema sudah ada dari Laravel.
+
+## Deploy (Render)
+
+```bash
+# pakai render.yaml + Dockerfile
+```
+
+Health check: `/api/health`
+
+## Scripts
+
+```bash
+npm run dev      # development
+npm run build    # production build
+npm run start    # serve
+npx prisma generate
+```

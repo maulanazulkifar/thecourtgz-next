@@ -1,0 +1,45 @@
+# Render FREE tier — Next.js standalone replace for BLACK LOTUS COURT
+services:
+  - type: web
+    name: thecourtgz-next
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_NAME
+        value: BLACK LOTUS COURT
+      - key: CACHE_PREFIX
+        value: black-lotus-court-cache-
+      - key: RECAPTCHA_MIN_SCORE
+        value: "0.5"
+      # Secrets — isi di Dashboard Render
+      - key: AUTH_SECRET
+        sync: false
+      - key: AUTH_URL
+        sync: false
+      - key: NEXTAUTH_URL
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: AUTH_DISCORD_ID
+        sync: false
+      - key: AUTH_DISCORD_SECRET
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: RECAPTCHA_SITE_KEY
+        sync: false
+      - key: RECAPTCHA_SECRET
+        sync: false

@@ -1,0 +1,108 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
+import { signOut } from "next-auth/react";
+
+const links = [
+  { href: "/home", label: "Transaksi", match: (p: string) => p === "/home" },
+  {
+    href: "/home/rekap?tab=stok",
+    label: "Cek Stok",
+    match: (p: string, tab: string) => p.startsWith("/home/rekap") && tab === "stok",
+  },
+  {
+    href: "/home/rekap?tab=deposit",
+    label: "Deposit",
+    match: (p: string, tab: string) => p.startsWith("/home/rekap") && tab === "deposit",
+  },
+  {
+    href: "/home/rekap?tab=withdraw",
+    label: "Withdraw",
+    match: (p: string, tab: string) => p.startsWith("/home/rekap") && tab === "withdraw",
+  },
+  {
+    href: "/home/monitoring",
+    label: "Monitoring",
+    match: (p: string) => p.startsWith("/home/monitoring"),
+  },
+  {
+    href: "/home/kategori",
+    label: "+ Kategori",
+    match: (p: string) => p.startsWith("/home/kategori"),
+  },
+  {
+    href: "/home/item",
+    label: "+ Item",
+    match: (p: string) => p.startsWith("/home/item"),
+  },
+];
+
+function NavInner({ isStaff = false }: { isStaff?: boolean }) {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tab = searchParams.get("tab") ?? "stok";
+  const [open, setOpen] = useState(false);
+
+  return (
+    <nav className={`blc-nav ${open ? "is-open" : ""}`} aria-label="Menu utama">
+      <div className="blc-nav-inner">
+        <Link href="/home" className="blc-nav-brand">
+          <img src="/image/blc.png" alt="" />
+          <span>BLC</span>
+        </Link>
+
+        <button
+          type="button"
+          className="blc-nav-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          Menu
+        </button>
+
+        <div className="blc-nav-menu">
+          {links.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={`blc-nav-link ${
+                link.match(pathname, tab) ? "is-active" : ""
+              }`}
+              onClick={() => setOpen(false)}
+            >
+              {link.label}
+            </Link>
+          ))}
+          {isStaff && (
+            <Link
+              href="/dashboard"
+              className={`blc-nav-link ${pathname.startsWith("/dashboard") || pathname.startsWith("/users") ? "is-active" : ""}`}
+              onClick={() => setOpen(false)}
+            >
+              Admin
+            </Link>
+          )}
+          <button
+            type="button"
+            className="blc-nav-link"
+            onClick={() =>
+              signOut({ callbackUrl: isStaff ? "/admin/login" : "/" })
+            }
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+export function Nav({ isStaff = false }: { isStaff?: boolean }) {
+  return (
+    <Suspense fallback={<nav className="blc-nav" />}>
+      <NavInner isStaff={isStaff} />
+    </Suspense>
+  );
+}

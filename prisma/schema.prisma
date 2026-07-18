@@ -1,0 +1,159 @@
+// Maps to existing Laravel / Supabase tables — do NOT prisma migrate against prod.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id              BigInt    @id @default(autoincrement())
+  discordId       String?   @unique @map("discord_id")
+  name            String
+  discordUsername String?   @map("discord_username")
+  discordAvatar   String?   @map("discord_avatar")
+  email           String    @unique
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  password        String
+  rememberToken   String?   @map("remember_token")
+  lastLoginAt     DateTime? @map("last_login_at")
+  lastLoginIp     String?   @map("last_login_ip")
+  createdAt       DateTime? @map("created_at")
+  updatedAt       DateTime? @map("updated_at")
+
+  stockMovements      StockMovement[] @relation("MovementUser")
+  returnedMovements   StockMovement[] @relation("ReturnedBy")
+  unreturnableMarked  StockMovement[] @relation("UnreturnableBy")
+
+  @@map("users")
+}
+
+model Category {
+  id          BigInt    @id @default(autoincrement())
+  name        String
+  description String?
+  createdAt   DateTime? @map("created_at")
+  updatedAt   DateTime? @map("updated_at")
+  items       Item[]
+
+  @@map("categories")
+}
+
+model Item {
+  id          BigInt    @id @default(autoincrement())
+  categoryId  BigInt    @map("category_id")
+  name        String
+  sku         String?   @unique
+  stock       Int       @default(0)
+  description String?
+  createdAt   DateTime? @map("created_at")
+  updatedAt   DateTime? @map("updated_at")
+
+  category  Category        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+
+  @@map("items")
+}
+
+model StockMovement {
+  id                 BigInt    @id @default(autoincrement())
+  itemId             BigInt    @map("item_id")
+  userId             BigInt    @map("user_id")
+  type               String
+  quantity           Int
+  toWhom             String?   @map("to_whom")
+  purpose            String?
+  note               String?
+  movementDate       DateTime  @map("movement_date")
+  returnedAt         DateTime? @map("returned_at")
+  returnedBy         BigInt?   @map("returned_by")
+  returnMovementId   BigInt?   @map("return_movement_id")
+  unreturnableAt     DateTime? @map("unreturnable_at")
+  unreturnableReason String?   @map("unreturnable_reason")
+  unreturnableBy     BigInt?   @map("unreturnable_by")
+  createdAt          DateTime? @map("created_at")
+  updatedAt          DateTime? @map("updated_at")
+
+  item              Item           @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user              User           @relation("MovementUser", fields: [userId], references: [id], onDelete: Cascade)
+  returnedByUser    User?          @relation("ReturnedBy", fields: [returnedBy], references: [id], onDelete: SetNull)
+  unreturnableByUser User?         @relation("UnreturnableBy", fields: [unreturnableBy], references: [id], onDelete: SetNull)
+  returnMovement    StockMovement? @relation("ReturnLink", fields: [returnMovementId], references: [id], onDelete: SetNull)
+  returnedFrom      StockMovement[] @relation("ReturnLink")
+
+  @@map("stock_movements")
+}
+
+model Role {
+  id        BigInt    @id @default(autoincrement())
+  name      String
+  guardName String    @map("guard_name")
+  createdAt DateTime? @map("created_at")
+  updatedAt DateTime? @map("updated_at")
+
+  modelHasRoles      ModelHasRole[]
+  roleHasPermissions RoleHasPermission[]
+
+  @@unique([name, guardName])
+  @@map("roles")
+}
+
+model Permission {
+  id        BigInt    @id @default(autoincrement())
+  name      String
+  guardName String    @map("guard_name")
+  createdAt DateTime? @map("created_at")
+  updatedAt DateTime? @map("updated_at")
+
+  modelHasPermissions ModelHasPermission[]
+  roleHasPermissions  RoleHasPermission[]
+
+  @@unique([name, guardName])
+  @@map("permissions")
+}
+
+model ModelHasRole {
+  roleId    BigInt @map("role_id")
+  modelType String @map("model_type")
+  modelId   BigInt @map("model_id")
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, modelId, modelType])
+  @@index([modelId, modelType])
+  @@map("model_has_roles")
+}
+
+model ModelHasPermission {
+  permissionId BigInt @map("permission_id")
+  modelType    String @map("model_type")
+  modelId      BigInt @map("model_id")
+
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([permissionId, modelId, modelType])
+  @@index([modelId, modelType])
+  @@map("model_has_permissions")
+}
+
+model RoleHasPermission {
+  permissionId BigInt @map("permission_id")
+  roleId       BigInt @map("role_id")
+
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([permissionId, roleId])
+  @@map("role_has_permissions")
+}
+
+model CacheEntry {
+  key        String @id
+  value      String
+  expiration Int
+
+  @@map("cache")
+}
