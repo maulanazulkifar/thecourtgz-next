@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { storeMovementAction } from "@/app/actions/inventory";
 
@@ -42,6 +42,7 @@ export function PortalForm({
   const [loading, setLoading] = useState(false);
   const [successTx, setSuccessTx] = useState<SuccessTx | null>(null);
   const [mounted, setMounted] = useState(false);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     setMounted(true);
@@ -106,32 +107,42 @@ export function PortalForm({
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    // Lock sinkron — setState loading belum cukup cegah double-click saat lag
+    if (submittingRef.current || loading) return;
+    submittingRef.current = true;
     setError(null);
 
     if (type === "out" && selected && quantity > selected.stock) {
+      submittingRef.current = false;
       setError(`Stok tidak mencukupi. Sisa realtime: ${selected.stock}`);
       return;
     }
 
     setLoading(true);
-    const fd = new FormData();
-    fd.set("category_id", categoryId);
-    fd.set("item_id", itemId);
-    fd.set("type", type);
-    fd.set("quantity", String(quantity));
-    if (note) fd.set("note", note);
+    try {
+      const fd = new FormData();
+      fd.set("category_id", categoryId);
+      fd.set("item_id", itemId);
+      fd.set("type", type);
+      fd.set("quantity", String(quantity));
+      if (note) fd.set("note", note);
 
-    const result = await storeMovementAction(fd);
-    setLoading(false);
+      const result = await storeMovementAction(fd);
 
-    if (!result.ok) {
-      setError(result.error);
-      return;
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+
+      setSuccessTx(result.successTx as SuccessTx);
+      setNote("");
+      setQuantity(1);
+    } catch {
+      setError("Gagal menyimpan. Coba lagi.");
+    } finally {
+      setLoading(false);
+      submittingRef.current = false;
     }
-
-    setSuccessTx(result.successTx as SuccessTx);
-    setNote("");
-    setQuantity(1);
   }
 
   return (
@@ -155,7 +166,8 @@ export function PortalForm({
           </a>
         </div>
 
-        <form className="blc-home-form" onSubmit={onSubmit}>
+        <form className="blc-home-form" onSubmit={onSubmit} aria-busy={loading}>
+          <fieldset disabled={loading} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
           <div className="blc-field">
             <label className="blc-label" htmlFor="category_id">
               Kategori
@@ -253,13 +265,15 @@ export function PortalForm({
               onChange={(e) => setNote(e.target.value)}
             />
           </div>
+          </fieldset>
 
           <button
             type="submit"
             className={`blc-btn ${loading ? "is-loading" : ""}`}
             disabled={itemsCount < 1 || loading}
+            aria-disabled={itemsCount < 1 || loading}
           >
-            Simpan
+            {loading ? "Menyimpan…" : "Simpan"}
           </button>
         </form>
       </div>

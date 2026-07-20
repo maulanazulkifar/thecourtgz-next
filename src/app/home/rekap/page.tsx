@@ -87,15 +87,15 @@ function movementSource(m: {
   }
   if (m.purpose === "deposit" || m.type === "in") {
     return {
-      label: "Deposit",
-      hint: "Input deposit / masuk biasa",
+      label: "Masuk",
+      hint: "Barang masuk ke gudang",
       note: m.note,
       klass: "is-deposit",
     };
   }
   return {
-    label: "Withdraw",
-    hint: "Input withdraw / keluar biasa",
+    label: "Keluar",
+    hint: "Barang keluar dari gudang",
     note: m.note,
     klass: "is-withdraw",
   };
@@ -120,9 +120,7 @@ export default async function RecapPage({
   ]);
 
   const stockTotal = stockRows.reduce((sum, r) => sum + r.stock, 0);
-  const formulaSisa = depositTotal - withdrawTotal;
-  const globalGap = stockTotal - formulaSisa;
-  const mismatchRows = stockRows.filter((r) => r.gap !== 0);
+  const mismatchCount = stockRows.filter((r) => r.gap !== 0).length;
   const categories = [...new Set(stockRows.map((r) => r.category))].sort((a, b) =>
     a.localeCompare(b),
   );
@@ -159,53 +157,40 @@ export default async function RecapPage({
     <BlcShell showNav isStaff={staff} canManageCatalog={canFix} wide scroll>
       <div className="blc-page-head">
         <h1>Cek Stok</h1>
-        <p>
-          Lihat sisa stok, filter kategori/item, dan audit transaksi kalau ada
-          selisih.
-        </p>
+        <p>Lihat sisa barang di gudang, dan riwayat barang masuk / keluar.</p>
       </div>
 
       <div className="blc-stat-grid">
         <div className="blc-stat">
-          <span>Sisa Sekarang</span>
+          <span>Sisa di gudang</span>
           <strong>{stockTotal.toLocaleString("id-ID")}</strong>
         </div>
         <div className="blc-stat">
-          <span>Total Masuk</span>
+          <span>Total masuk</span>
           <strong>{depositTotal.toLocaleString("id-ID")}</strong>
         </div>
         <div className="blc-stat">
-          <span>Total Keluar</span>
+          <span>Total keluar</span>
           <strong>{withdrawTotal.toLocaleString("id-ID")}</strong>
         </div>
       </div>
 
-      <div className={`blc-mon-summary ${globalGap !== 0 ? "is-warn" : ""}`}>
-        Masuk <strong>{depositTotal.toLocaleString("id-ID")}</strong> − Keluar{" "}
-        <strong>{withdrawTotal.toLocaleString("id-ID")}</strong> = Ledger{" "}
-        <strong className="blc-mon-summary-hl">
-          {formulaSisa.toLocaleString("id-ID")}
-        </strong>
-        {globalGap === 0 ? (
-          <span className="blc-mon-summary-note"> · seimbang dengan sisa stok</span>
-        ) : (
-          <span className="blc-mon-summary-note">
-            {" "}
-            · selisih vs stok:{" "}
-            <strong style={{ color: "#efb0b0" }}>
-              {globalGap > 0 ? "+" : ""}
-              {globalGap.toLocaleString("id-ID")}
-            </strong>{" "}
-            ({mismatchRows.length} item)
-          </span>
-        )}
-      </div>
+      {mismatchCount > 0 ? (
+        <div className="blc-mon-summary is-warn">
+          Ada <strong>{mismatchCount} barang</strong> yang angkanya kurang cocok.
+          Cek daftar di bawah (warna merah).
+        </div>
+      ) : (
+        <div className="blc-mon-summary">
+          Semua stok terlihat aman — tidak ada angka yang aneh.
+        </div>
+      )}
 
       <div className="blc-tabs" role="tablist">
         {[
-          ["stok", "Sisa & Audit"],
-          ["deposit", "Deposit / Masuk"],
-          ["withdraw", "Withdraw / Keluar"],
+          ["stok", "Sisa Stok"],
+          ["deposit", "Barang Masuk"],
+          ["withdraw", "Barang Keluar"],
         ].map(([key, label]) => (
           <Link
             key={key}
@@ -229,7 +214,7 @@ export default async function RecapPage({
         <div className="blc-panel">
           {movements.length === 0 ? (
             <div className="blc-empty">
-              Belum ada riwayat {tab === "deposit" ? "deposit" : "withdraw"}.
+              Belum ada riwayat {tab === "deposit" ? "barang masuk" : "barang keluar"}.
             </div>
           ) : (
             <>

@@ -10,19 +10,8 @@ const links = [
   {
     href: "/home/rekap?tab=stok",
     label: "Cek Stok",
-    match: (p: string, tab: string) =>
-      (p.startsWith("/home/rekap") && (tab === "stok" || !tab)) ||
-      p.startsWith("/home/audit-stok"),
-  },
-  {
-    href: "/home/rekap?tab=deposit",
-    label: "Deposit",
-    match: (p: string, tab: string) => p.startsWith("/home/rekap") && tab === "deposit",
-  },
-  {
-    href: "/home/rekap?tab=withdraw",
-    label: "Withdraw",
-    match: (p: string, tab: string) => p.startsWith("/home/rekap") && tab === "withdraw",
+    match: (p: string) =>
+      p.startsWith("/home/rekap") || p.startsWith("/home/audit-stok"),
   },
   {
     href: "/home/monitoring",

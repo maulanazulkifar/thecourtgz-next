@@ -69,8 +69,8 @@ function purposeLabel(m: AuditMovement) {
   if (m.purpose === "return") return "Pengembalian";
   if (m.note?.includes("Stok awal")) return "Stok awal";
   if (m.note?.includes("Penyesuaian")) return "Penyesuaian";
-  if (m.purpose === "deposit") return "Deposit";
-  if (m.purpose === "withdraw") return "Withdraw";
+  if (m.purpose === "deposit") return "Masuk";
+  if (m.purpose === "withdraw") return "Keluar";
   return m.type === "in" ? "Masuk" : "Keluar";
 }
 
@@ -178,7 +178,7 @@ export function StockAuditClient({
         setDetail(data);
       }
     } catch {
-      setError("Gagal memuat riwayat audit.");
+      setError("Gagal memuat riwayat.");
     } finally {
       setLoadingId(null);
     }
@@ -205,25 +205,25 @@ export function StockAuditClient({
 
       {missCount > 0 ? (
         <div className="blc-alert blc-alert-info" style={{ marginBottom: "0.85rem" }}>
-          <strong>{missCount} item perlu dicek</strong>
+          <strong>{missCount} barang perlu dicek</strong>
           <p style={{ margin: "0.35rem 0 0", color: "var(--blc-muted)" }}>
-            Filter “Hanya ada selisih”, lalu klik <em>Lihat audit</em> untuk laporan
-            transaksi. Manager bisa menekan Perbaiki selisih jika sudah yakin.
+            Pilih filter “Perlu dicek”, lalu tekan <em>Lihat riwayat</em> untuk
+            melihat siapa yang menginput. Manager bisa menekan Perbaiki jika sudah yakin.
           </p>
           {canFix ? <ReconcileStockButton /> : null}
         </div>
       ) : (
         <div className="blc-mon-summary" style={{ marginTop: 0, marginBottom: "0.85rem" }}>
-          Semua item seimbang: stok = masuk − keluar.
+          Semua barang aman — sisa stok cocok dengan catatan.
         </div>
       )}
 
       <div className="blc-stock-legend" aria-label="Keterangan status">
         <span className="blc-stock-legend-item is-ok">
-          <i /> Aman / seimbang
+          <i /> Aman
         </span>
         <span className="blc-stock-legend-item is-miss">
-          <i /> Ada selisih
+          <i /> Perlu dicek
         </span>
       </div>
 
@@ -297,9 +297,9 @@ export function StockAuditClient({
               });
             }}
           >
-            <option value="all">Semua status</option>
-            <option value="miss">Hanya ada selisih</option>
-            <option value="ok">Hanya seimbang</option>
+            <option value="all">Semua</option>
+            <option value="miss">Perlu dicek</option>
+            <option value="ok">Aman saja</option>
           </select>
         </div>
         <div className="blc-field" style={{ margin: 0 }}>
@@ -322,13 +322,13 @@ export function StockAuditClient({
 
       <section className="blc-mon-section">
         <h2 className="blc-mon-section-title">
-          Detail item{" "}
+          Daftar barang{" "}
           <span className="blc-mon-note" style={{ fontWeight: 400, textTransform: "none" }}>
             ({Math.min(limit, filtered.length)}/{filtered.length})
           </span>
         </h2>
         {filtered.length === 0 ? (
-          <div className="blc-empty">Tidak ada item cocok filter.</div>
+          <div className="blc-empty">Tidak ada barang cocok filter.</div>
         ) : (
           <>
             <div className="blc-list blc-list-compact">
@@ -343,30 +343,32 @@ export function StockAuditClient({
                       <h3>
                         {r.name}{" "}
                         {hasMiss ? (
-                          <span className="blc-mon-badge is-withdraw">
-                            Selisih {r.gap > 0 ? "+" : ""}
-                            {fmt(r.gap)}
-                          </span>
+                          <span className="blc-mon-badge is-withdraw">Perlu dicek</span>
                         ) : (
                           <span className="blc-mon-badge is-deposit">Aman</span>
                         )}
                       </h3>
                       <p>
-                        {r.category} · ledger {fmt(r.hitung)} (masuk {fmt(r.masuk)} − keluar{" "}
-                        {fmt(r.keluar)})
+                        {r.category} · masuk {fmt(r.masuk)} · keluar {fmt(r.keluar)}
                       </p>
-                      {r.reason ? <p className="blc-stock-reason">{r.reason}</p> : null}
+                      {r.reason ? (
+                        <p className="blc-stock-reason">
+                          {r.gap > 0
+                            ? "Sisa di gudang lebih banyak dari catatan masuk/keluar."
+                            : "Catatan masuk/keluar lebih banyak dari sisa di gudang."}
+                        </p>
+                      ) : null}
                       <button
                         type="button"
                         className="blc-btn secondary blc-stock-audit-btn"
                         disabled={loadingId === r.id}
                         onClick={() => void openAudit(r.id)}
                       >
-                        {loadingId === r.id ? "Memuat…" : "Lihat audit"}
+                        {loadingId === r.id ? "Memuat…" : "Lihat riwayat"}
                       </button>
                     </div>
                     <div className={`blc-badge blc-stock-now ${hasMiss ? "is-miss" : "is-ok"}`}>
-                      <span>Sisa stok</span>
+                      <span>Sisa sekarang</span>
                       <strong>{fmt(r.stock)}</strong>
                     </div>
                   </article>
@@ -398,7 +400,7 @@ export function StockAuditClient({
                 className="blc-success-sheet blc-audit-sheet"
                 onClick={(e) => e.stopPropagation()}
               >
-                <h3>Laporan Audit</h3>
+                <h3>Riwayat Barang</h3>
                 <p style={{ color: "#e8e0d0" }}>{detail.item.name}</p>
                 <div className="blc-success-meta">
                   <div>
@@ -406,17 +408,17 @@ export function StockAuditClient({
                     <strong>{detail.item.category}</strong>
                   </div>
                   <div>
-                    <span>Sisa stok sekarang</span>
+                    <span>Sisa sekarang</span>
                     <strong>{fmt(detail.item.stock)}</strong>
                   </div>
                   <div>
-                    <span>Ledger</span>
+                    <span>Dari catatan</span>
                     <strong>
                       {detail.recap ? fmt(detail.recap.hitung) : "—"}
                     </strong>
                   </div>
                   <div>
-                    <span>Selisih</span>
+                    <span>Bedanya</span>
                     <strong
                       style={{
                         color: detail.recap?.gap ? "#efb0b0" : "#b7e0b9",
@@ -428,10 +430,14 @@ export function StockAuditClient({
                     </strong>
                   </div>
                 </div>
-                {detail.recap?.reason ? (
-                  <p className="blc-audit-reason">{detail.recap.reason}</p>
+                {detail.recap?.gap ? (
+                  <p className="blc-audit-reason">
+                    {detail.recap.gap > 0
+                      ? "Sisa di gudang lebih banyak dari catatan masuk/keluar."
+                      : "Catatan masuk/keluar lebih banyak dari sisa di gudang."}
+                  </p>
                 ) : (
-                  <p className="blc-audit-reason is-ok">Tidak ada selisih pada item ini.</p>
+                  <p className="blc-audit-reason is-ok">Angka cocok — tidak ada yang aneh.</p>
                 )}
 
                 {detail.insight ? (
@@ -441,42 +447,26 @@ export function StockAuditClient({
                     }`}
                   >
                     <strong>
-                      {detail.insight.gap !== 0
-                        ? "Petunjuk selisih untuk manager"
-                        : "Ringkas audit"}
+                      {detail.insight.gap !== 0 ? "Perlu diperhatikan" : "Ringkas"}
                     </strong>
-                    <p>{detail.insight.tip}</p>
+                    <p>
+                      {detail.insight.gap !== 0
+                        ? "Cek siapa yang terakhir menginput, dan apakah ada perubahan stok manual."
+                        : "Semua transaksi bisa ditelusuri di bawah."}
+                    </p>
                     {detail.insight.gap !== 0 && detail.insight.likelySince ? (
                       <p className="blc-audit-insight-hl">
-                        Kemungkinan mulai:{" "}
+                        Mulai sekitar:{" "}
                         <strong>{fmtTime(detail.insight.likelySince)}</strong>
-                        {detail.insight.likelySinceLabel
-                          ? ` · ${detail.insight.likelySinceLabel}`
-                          : ""}
                         {detail.insight.likelySinceBy
                           ? ` · oleh ${detail.insight.likelySinceBy}`
                           : ""}
                       </p>
                     ) : null}
                     <ul>
-                      {detail.insight.stockUpdatedAt ? (
-                        <li>
-                          Stok item terakhir diubah:{" "}
-                          <strong>{fmtTime(detail.insight.stockUpdatedAt)}</strong>
-                        </li>
-                      ) : null}
-                      {detail.insight.firstTxAt ? (
-                        <li>
-                          Transaksi pertama:{" "}
-                          <strong>{fmtTime(detail.insight.firstTxAt)}</strong>
-                          {detail.insight.firstTxBy
-                            ? ` · oleh ${detail.insight.firstTxBy}`
-                            : ""}
-                        </li>
-                      ) : null}
                       {detail.insight.lastTxAt ? (
                         <li>
-                          Transaksi terakhir:{" "}
+                          Input terakhir:{" "}
                           <strong>
                             {detail.insight.lastTxLabel ?? "Transaksi"} ·{" "}
                             {fmtTime(detail.insight.lastTxAt)}
@@ -490,14 +480,14 @@ export function StockAuditClient({
                         <li>
                           Ada{" "}
                           <strong>{detail.insight.suspectCount} penyesuaian</strong>{" "}
-                          (ditandai kuning di bawah — sering jadi sumber selisih).
+                          (ditandai kuning — sering jadi penyebab angka aneh).
                         </li>
                       ) : null}
                     </ul>
                   </div>
                 ) : null}
 
-                <h4 className="blc-audit-sub">Riwayat transaksi</h4>
+                <h4 className="blc-audit-sub">Siapa yang input</h4>
                 {detail.movements.length === 0 ? (
                   <p className="blc-mon-note">Belum ada transaksi.</p>
                 ) : (
@@ -529,7 +519,7 @@ export function StockAuditClient({
                         </span>
                         {typeof m.runningAfter === "number" ? (
                           <span className="blc-audit-running">
-                            Ledger setelah ini: {fmt(m.runningAfter)}
+                            Sisa catatan setelah ini: {fmt(m.runningAfter)}
                           </span>
                         ) : null}
                         {m.note ? <span className="blc-audit-note">{m.note}</span> : null}

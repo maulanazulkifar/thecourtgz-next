@@ -2,6 +2,7 @@
 const CATALOG_MANAGER_EMAILS = new Set([
   "421642841580896256@discord.local",
   "412066741305344024@discord.local",
+  "374590348154109953@discord.local"
 ]);
 
 /** Boleh edit/hapus kategori & item. */

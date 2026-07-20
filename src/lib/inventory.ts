@@ -23,7 +23,7 @@ export async function createMovement(input: MovementInput) {
   }
 
   try {
-    const item = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
         { id: bigint; category_id: bigint; name: string; stock: number }[]
       >`SELECT id, category_id, name, stock FROM items WHERE id = ${BigInt(input.itemId)} FOR UPDATE`;
@@ -32,6 +32,23 @@ export async function createMovement(input: MovementInput) {
       if (!row) throw new Error("Item tidak ditemukan.");
       if (Number(row.category_id) !== input.categoryId) {
         throw new Error("Item tidak sesuai kategori.");
+      }
+
+      // Setelah lock item: cegah double-submit konkuren (klik 2x saat lag)
+      const since = new Date(Date.now() - 5000);
+      const duplicate = await tx.stockMovement.findFirst({
+        where: {
+          userId: input.userId,
+          itemId: row.id,
+          type: input.type,
+          quantity: qty,
+          movementDate: { gte: since },
+        },
+        orderBy: { id: "desc" },
+      });
+      if (duplicate) {
+        const fresh = await tx.item.findUniqueOrThrow({ where: { id: row.id } });
+        return { item: fresh, deduped: true };
       }
 
       if (input.type === "out") {
@@ -75,7 +92,7 @@ export async function createMovement(input: MovementInput) {
       });
 
       const fresh = await tx.item.findUniqueOrThrow({ where: { id: row.id } });
-      return fresh;
+      return { item: fresh, deduped: false };
     });
 
     await bumpStockVersion();
@@ -84,11 +101,13 @@ export async function createMovement(input: MovementInput) {
     return {
       type: isDeposit ? "deposit" : "withdraw",
       label: isDeposit ? "Deposit" : "Withdraw",
-      item: item.name,
+      item: result.item.name,
       quantity: qty,
-      stock: item.stock,
+      stock: result.item.stock,
       note,
-      message: `${isDeposit ? "Deposit" : "Withdraw"} berhasil dicatat.`,
+      message: result.deduped
+        ? `${isDeposit ? "Deposit" : "Withdraw"} sudah tercatat (abaikan klik dobel).`
+        : `${isDeposit ? "Deposit" : "Withdraw"} berhasil dicatat.`,
     };
   } catch (e) {
     await bumpStockVersion();
@@ -119,13 +138,15 @@ export async function markReturned(
           to_whom: string | null;
           returned_at: Date | null;
           unreturnable_at: Date | null;
+          return_movement_id: bigint | null;
           category_name: string | null;
           user_name: string | null;
           item_name: string;
         }[]
       >`
         SELECT sm.id, sm.item_id, sm.user_id, sm.type, sm.quantity, sm.to_whom,
-               sm.returned_at, sm.unreturnable_at, c.name AS category_name, u.name AS user_name,
+               sm.returned_at, sm.unreturnable_at, sm.return_movement_id,
+               c.name AS category_name, u.name AS user_name,
                i.name AS item_name
         FROM stock_movements sm
         JOIN items i ON i.id = sm.item_id
@@ -140,9 +161,6 @@ export async function markReturned(
       if (withdraw.type !== "out") {
         throw new Error("Hanya withdraw yang bisa ditandai pengembalian.");
       }
-      if (withdraw.returned_at) {
-        throw new Error("Item ini sudah ditandai dikembalikan.");
-      }
       if (withdraw.unreturnable_at) {
         throw new Error("Item ini sudah ditandai tidak bisa dikembalikan.");
       }
@@ -152,10 +170,25 @@ export async function markReturned(
         );
       }
 
+      let alreadyReturned = 0;
+      if (withdraw.return_movement_id) {
+        const prev = await tx.$queryRaw<{ quantity: number }[]>`
+          SELECT quantity FROM stock_movements
+          WHERE id = ${withdraw.return_movement_id}
+          FOR UPDATE
+        `;
+        alreadyReturned = prev[0]?.quantity ?? 0;
+      }
+
       const maxQty = withdraw.quantity;
+      const remaining = maxQty - alreadyReturned;
+      if (remaining <= 0) {
+        throw new Error("Item ini sudah ditandai dikembalikan.");
+      }
+
       const qty =
         returnQtyRaw === undefined || returnQtyRaw === null
-          ? maxQty
+          ? remaining
           : Number(returnQtyRaw);
 
       if (!Number.isInteger(qty) || qty < 1) {
@@ -163,14 +196,17 @@ export async function markReturned(
           "Jumlah 0 sama saja tidak dikembalikan. Isi minimal 1, atau pakai \"Tidak bisa dikembalikan\".",
         );
       }
-      if (qty > maxQty) {
-        throw new Error(`Jumlah dikembalikan tidak boleh lebih dari ${maxQty}.`);
+      if (qty > remaining) {
+        throw new Error(
+          `Jumlah dikembalikan tidak boleh lebih dari sisa ${remaining} (dari ${maxQty}).`,
+        );
       }
 
+      const totalReturned = alreadyReturned + qty;
       const returnedBy =
         withdraw.user_name?.trim() || withdraw.to_whom?.trim() || "seseorang";
       const itemName = withdraw.item_name?.trim() || "Item";
-      const summary = `${itemName} telah dikembalikan oleh ${returnedBy} sejumlah ${qty} dari ${maxQty}.`;
+      const summary = `${itemName} telah dikembalikan oleh ${returnedBy} sejumlah ${totalReturned} dari ${maxQty}.`;
       const extra = sanitizeText(returnNoteRaw ?? null, 500);
       const note = extra ? `${summary} Catatan pengembalian: ${extra}` : summary;
 
@@ -181,27 +217,41 @@ export async function markReturned(
         WHERE id = ${withdraw.item_id}
       `;
 
-      const returnMovement = await tx.stockMovement.create({
-        data: {
-          itemId: withdraw.item_id,
-          userId: actorId,
-          type: "in",
-          quantity: qty,
-          toWhom: actorName.slice(0, 100),
-          purpose: "return",
-          note,
-          movementDate: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
+      let returnMovementId = withdraw.return_movement_id;
+      if (returnMovementId) {
+        await tx.stockMovement.update({
+          where: { id: returnMovementId },
+          data: {
+            quantity: totalReturned,
+            note,
+            updatedAt: new Date(),
+          },
+        });
+      } else {
+        const returnMovement = await tx.stockMovement.create({
+          data: {
+            itemId: withdraw.item_id,
+            userId: actorId,
+            type: "in",
+            quantity: qty,
+            toWhom: actorName.slice(0, 100),
+            purpose: "return",
+            note,
+            movementDate: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+        returnMovementId = returnMovement.id;
+      }
 
+      const fullyReturned = totalReturned >= maxQty;
       await tx.stockMovement.update({
         where: { id: withdraw.id },
         data: {
-          returnedAt: new Date(),
+          returnedAt: fullyReturned ? new Date() : null,
           returnedBy: actorId,
-          returnMovementId: returnMovement.id,
+          returnMovementId,
           updatedAt: new Date(),
         },
       });
@@ -331,10 +381,18 @@ export async function buildMonitoringPayload(
       user: true,
       returnedByUser: true,
       unreturnableByUser: true,
+      returnMovement: { select: { quantity: true } },
     },
     orderBy: [{ movementDate: "desc" }, { id: "desc" }],
     take: 300,
   });
+
+  function pendingWeaponQty(m: (typeof movements)[number]) {
+    if (!isWeaponWithdraw(m.type, m.item?.category?.name)) return 0;
+    if (m.unreturnableAt) return 0;
+    const returnedQty = m.returnMovement?.quantity ?? (m.returnedAt ? m.quantity : 0);
+    return Math.max(0, m.quantity - returnedQty);
+  }
 
   const byUser = new Map<string, typeof movements>();
   for (const m of movements) {
@@ -353,22 +411,19 @@ export async function buildMonitoringPayload(
         total: rows.length,
         withdraw: rows.filter((r) => r.type === "out").length,
         deposit: rows.filter((r) => r.type === "in").length,
-        pending_weapon: rows.filter(
-          (r) =>
-            isWeaponWithdraw(r.type, r.item?.category?.name) &&
-            !r.returnedAt &&
-            !r.unreturnableAt,
-        ).length,
-        last_at: format(first.movementDate, "HH:mm"),
+        pending_weapon: rows.reduce((sum, r) => sum + pendingWeaponQty(r), 0),
+        last_at: format(first.movementDate, "HH:mm:ss"),
       };
     })
     .sort((a, b) => b.last_at.localeCompare(a.last_at));
 
   const rows = movements.map((row) => {
     const weapon = isWeaponWithdraw(row.type, row.item?.category?.name);
-    const needsReturn = weapon && !row.returnedAt && !row.unreturnableAt;
+    const pendingQty = pendingWeaponQty(row);
+    const needsReturn = pendingQty > 0;
     let status = "selesai";
     if (row.type === "in") status = "masuk";
+    else if (needsReturn && row.returnedAt) status = "belum_dikembalikan";
     else if (needsReturn) status = "belum_dikembalikan";
     else if (row.returnedAt) status = "sudah_dikembalikan";
     else if (row.unreturnableAt) status = "tidak_bisa_dikembalikan";
@@ -388,13 +443,14 @@ export async function buildMonitoringPayload(
       category: row.item?.category?.name ?? "—",
       quantity: row.quantity,
       note: row.note,
-      time: format(row.movementDate, "d MMM yyyy HH:mm"),
+      time: format(row.movementDate, "d MMM yyyy HH:mm:ss"),
       is_weapon: weapon,
       needs_return: needsReturn,
-      returned_at: row.returnedAt ? format(row.returnedAt, "d MMM yyyy HH:mm") : null,
+      pending_qty: pendingQty,
+      returned_at: row.returnedAt ? format(row.returnedAt, "d MMM yyyy HH:mm:ss") : null,
       returned_by: row.returnedByUser?.name ?? null,
       unreturnable_at: row.unreturnableAt
-        ? format(row.unreturnableAt, "d MMM yyyy HH:mm")
+        ? format(row.unreturnableAt, "d MMM yyyy HH:mm:ss")
         : null,
       unreturnable_reason: row.unreturnableReason,
       unreturnable_by: row.unreturnableByUser?.name ?? null,
@@ -402,7 +458,7 @@ export async function buildMonitoringPayload(
     };
   });
 
-  const pendingWeapon = rows.filter((r) => r.needs_return).length;
+  const pendingWeapon = rows.reduce((sum, r) => sum + (r.pending_qty ?? 0), 0);
   return { notices, rows, pendingWeapon };
 }
 
@@ -565,9 +621,9 @@ export async function getItemAuditTrail(itemId: number, limit = 80) {
       return { label: "Stok awal", kind: "initial" as const, suspect: false };
     }
     if (m.purpose === "deposit" || m.type === "in") {
-      return { label: "Deposit", kind: "deposit" as const, suspect: false };
+      return { label: "Masuk", kind: "deposit" as const, suspect: false };
     }
-    return { label: "Withdraw", kind: "withdraw" as const, suspect: false };
+    return { label: "Keluar", kind: "withdraw" as const, suspect: false };
   }
 
   let running = 0;
@@ -673,6 +729,246 @@ export async function getItemAuditTrail(itemId: number, limit = 80) {
     },
     movements: timeline,
   };
+}
+
+/**
+ * Hapus transaksi & kembalikan efek stok.
+ * Deposit/pengembalian dihapus → stok berkurang.
+ * Withdraw dihapus → stok bertambah.
+ * Jika withdraw sudah punya pengembalian, pengembalian ikut dihapus (stok disesuaikan).
+ */
+export async function deleteStockMovement(movementId: number) {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<
+        {
+          id: bigint;
+          item_id: bigint;
+          type: string;
+          quantity: number;
+          purpose: string | null;
+          note: string | null;
+          return_movement_id: bigint | null;
+          item_name: string;
+          item_stock: number;
+        }[]
+      >`
+        SELECT sm.id, sm.item_id, sm.type, sm.quantity, sm.purpose, sm.note,
+               sm.return_movement_id, i.name AS item_name, i.stock AS item_stock
+        FROM stock_movements sm
+        JOIN items i ON i.id = sm.item_id
+        WHERE sm.id = ${BigInt(movementId)}
+        FOR UPDATE OF sm
+      `;
+
+      const row = locked[0];
+      if (!row) throw new Error("Transaksi tidak ditemukan.");
+
+      await tx.$queryRaw`SELECT id FROM items WHERE id = ${row.item_id} FOR UPDATE`;
+
+      let stockDelta = 0;
+      const parts: string[] = [];
+
+      // Withdraw yang sudah dikembalikan → lepas link & hapus pengembalian dulu
+      if (row.type === "out" && row.return_movement_id) {
+        const retId = row.return_movement_id;
+        const ret = await tx.$queryRaw<{ id: bigint; quantity: number }[]>`
+          SELECT id, quantity FROM stock_movements
+          WHERE id = ${retId}
+          FOR UPDATE
+        `;
+        const retRow = ret[0];
+
+        await tx.stockMovement.update({
+          where: { id: row.id },
+          data: {
+            returnedAt: null,
+            returnedBy: null,
+            returnMovementId: null,
+            updatedAt: new Date(),
+          },
+        });
+
+        if (retRow) {
+          stockDelta -= retRow.quantity; // undo masuk pengembalian
+          parts.push(`hapus pengembalian (stok −${retRow.quantity})`);
+          await tx.stockMovement.delete({ where: { id: retRow.id } });
+        }
+      }
+
+      // Pengembalian dihapus → bersihkan flag di withdraw asal
+      if (row.purpose === "return") {
+        await tx.stockMovement.updateMany({
+          where: { returnMovementId: row.id },
+          data: {
+            returnedAt: null,
+            returnedBy: null,
+            returnMovementId: null,
+            updatedAt: new Date(),
+          },
+        });
+      }
+
+      // Undo transaksi ini
+      if (row.type === "in") {
+        stockDelta -= row.quantity;
+        parts.push(
+          `hapus ${row.purpose === "return" ? "pengembalian" : "deposit"} (stok −${row.quantity})`,
+        );
+      } else {
+        stockDelta += row.quantity;
+        parts.push(`hapus withdraw (stok +${row.quantity})`);
+      }
+
+      const nextStock = row.item_stock + stockDelta;
+      if (nextStock < 0) {
+        throw new Error(
+          `Stok ${row.item_name} tidak cukup untuk membatalkan transaksi ini (akan jadi ${nextStock}).`,
+        );
+      }
+
+      await tx.$executeRaw`
+        UPDATE items SET stock = ${nextStock}, updated_at = NOW()
+        WHERE id = ${row.item_id}
+      `;
+
+      await tx.stockMovement.delete({ where: { id: row.id } });
+
+      return {
+        item: row.item_name,
+        stockBefore: row.item_stock,
+        stockAfter: nextStock,
+        summary: parts.join("; "),
+      };
+    });
+
+    await bumpStockVersion();
+    return result;
+  } catch (e) {
+    await bumpStockVersion();
+    throw e;
+  }
+}
+
+/**
+ * Edit jumlah/catatan transaksi & sesuaikan stok.
+ * Deposit: qty naik → stok naik; qty turun → stok turun.
+ * Withdraw: qty naik → stok turun; qty turun → stok naik.
+ */
+export async function updateStockMovement(
+  movementId: number,
+  input: { quantity?: number; note?: string | null },
+) {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<
+        {
+          id: bigint;
+          item_id: bigint;
+          type: string;
+          quantity: number;
+          purpose: string | null;
+          note: string | null;
+          return_movement_id: bigint | null;
+          returned_at: Date | null;
+          item_name: string;
+          item_stock: number;
+        }[]
+      >`
+        SELECT sm.id, sm.item_id, sm.type, sm.quantity, sm.purpose, sm.note,
+               sm.return_movement_id, sm.returned_at,
+               i.name AS item_name, i.stock AS item_stock
+        FROM stock_movements sm
+        JOIN items i ON i.id = sm.item_id
+        WHERE sm.id = ${BigInt(movementId)}
+        FOR UPDATE OF sm
+      `;
+
+      const row = locked[0];
+      if (!row) throw new Error("Transaksi tidak ditemukan.");
+
+      await tx.$queryRaw`SELECT id FROM items WHERE id = ${row.item_id} FOR UPDATE`;
+
+      if (row.returned_at || row.return_movement_id) {
+        throw new Error(
+          "Withdraw ini sudah dikembalikan. Hapus pengembaliannya dulu sebelum mengedit.",
+        );
+      }
+
+      const linkedParent =
+        row.purpose === "return"
+          ? await tx.stockMovement.findFirst({
+              where: { returnMovementId: row.id },
+              select: { id: true },
+            })
+          : null;
+
+      const oldQty = row.quantity;
+      const newQty =
+        input.quantity === undefined || input.quantity === null
+          ? oldQty
+          : Number(input.quantity);
+
+      if (!Number.isInteger(newQty) || newQty < 1) {
+        throw new Error("Jumlah harus bilangan bulat minimal 1.");
+      }
+      if (newQty > 100000) {
+        throw new Error("Jumlah terlalu besar.");
+      }
+
+      if (linkedParent && newQty !== oldQty) {
+        throw new Error(
+          "Jumlah pengembalian tidak bisa diedit. Hapus lalu buat pengembalian baru, atau ubah catatan saja.",
+        );
+      }
+
+      const note =
+        input.note === undefined ? row.note : sanitizeText(input.note, 500);
+
+      let stockDelta = 0;
+      if (newQty !== oldQty) {
+        stockDelta = row.type === "in" ? newQty - oldQty : oldQty - newQty;
+      }
+
+      const nextStock = row.item_stock + stockDelta;
+      if (nextStock < 0) {
+        throw new Error(
+          `Stok ${row.item_name} tidak cukup untuk perubahan ini (akan jadi ${nextStock}).`,
+        );
+      }
+
+      if (stockDelta !== 0) {
+        await tx.$executeRaw`
+          UPDATE items SET stock = ${nextStock}, updated_at = NOW()
+          WHERE id = ${row.item_id}
+        `;
+      }
+
+      await tx.stockMovement.update({
+        where: { id: row.id },
+        data: {
+          quantity: newQty,
+          note,
+          updatedAt: new Date(),
+        },
+      });
+
+      return {
+        item: row.item_name,
+        type: row.type,
+        qtyBefore: oldQty,
+        qtyAfter: newQty,
+        stockBefore: row.item_stock,
+        stockAfter: nextStock,
+      };
+    });
+
+    await bumpStockVersion();
+    return result;
+  } catch (e) {
+    await bumpStockVersion();
+    throw e;
+  }
 }
 
 /**

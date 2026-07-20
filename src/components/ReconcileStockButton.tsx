@@ -19,7 +19,7 @@ export function ReconcileStockButton() {
         onClick={async () => {
           if (
             !confirm(
-              "Samakan stok item ke riwayat transaksi (masuk − keluar), dan hapus penyesuaian dobel?",
+              "Samakan sisa stok di gudang dengan catatan masuk/keluar? Penyesuaian dobel juga akan dibersihkan.",
             )
           ) {
             return;
@@ -32,7 +32,7 @@ export function ReconcileStockButton() {
           if (result.ok) router.refresh();
         }}
       >
-        {loading ? "Menyelesaikan…" : "Perbaiki selisih"}
+        {loading ? "Memperbaiki…" : "Perbaiki angka"}
       </button>
       {msg ? (
         <p className="blc-mon-note" style={{ marginTop: "0.45rem" }}>

@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import {
   markReturnedAction,
   markUnreturnableAction,
+  deleteMovementAction,
+  updateMovementAction,
 } from "@/app/actions/inventory";
-import { canActOnWeaponReturn } from "@/lib/category-access";
+import { canActOnWeaponReturn, canManageCatalog } from "@/lib/category-access";
 import { BlcNoticeOverlay } from "@/components/BlcNoticeOverlay";
 
 type Notice = {
@@ -32,6 +34,7 @@ type Row = {
   time: string;
   is_weapon: boolean;
   needs_return: boolean;
+  pending_qty?: number;
   returned_at: string | null;
   returned_by: string | null;
   unreturnable_at: string | null;
@@ -43,6 +46,23 @@ type Row = {
 type NoticeUi =
   | { kind: "confirm-return"; id: number; item: string; maxQty: number }
   | { kind: "confirm-lost"; id: number; item: string }
+  | {
+      kind: "confirm-edit";
+      id: number;
+      item: string;
+      type: string;
+      type_label: string;
+      quantity: number;
+      note: string | null;
+    }
+  | {
+      kind: "confirm-delete";
+      id: number;
+      item: string;
+      type: string;
+      type_label: string;
+      quantity: number;
+    }
   | { kind: "success"; title: string; message: string }
   | { kind: "error"; message: string };
 
@@ -106,7 +126,20 @@ export function MonitoringClient({
   const [lostReason, setLostReason] = useState("");
   const [returnQty, setReturnQty] = useState(1);
   const [returnNote, setReturnNote] = useState("");
+  const [editQty, setEditQty] = useState(1);
+  const [editNote, setEditNote] = useState("");
+  const [showAllOk, setShowAllOk] = useState(false);
   const [uiNotice, setUiNotice] = useState<NoticeUi | null>(null);
+
+  const isManager = canManageCatalog(viewerEmail);
+
+  const pendingPeople = notices
+    .filter((n) => n.pending_weapon > 0)
+    .sort((a, b) => b.pending_weapon - a.pending_weapon || a.name.localeCompare(b.name));
+  const okPeople = notices
+    .filter((n) => n.pending_weapon <= 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const okPreview = showAllOk ? okPeople : okPeople.slice(0, 8);
 
   useEffect(() => {
     setFrom(initialFrom);
@@ -255,9 +288,62 @@ export function MonitoringClient({
     });
   }
 
+  function focusMember(userId: number) {
+    const qs = new URLSearchParams();
+    if (allDates) qs.set("all", "1");
+    else {
+      if (from) qs.set("from", from);
+      if (to) qs.set("to", to);
+    }
+    qs.set("member", String(userId));
+    if (category) qs.set("category", category);
+    router.push(`/home/monitoring?${qs}`);
+  }
+
   function closeSuccess() {
     setUiNotice(null);
     router.refresh();
+  }
+
+  async function confirmEdit() {
+    if (!uiNotice || uiNotice.kind !== "confirm-edit") return;
+    const qty = Number(editQty);
+    if (!Number.isInteger(qty) || qty < 1) {
+      setUiNotice({ kind: "error", message: "Jumlah harus minimal 1." });
+      return;
+    }
+    setLoading(true);
+    const result = await updateMovementAction(
+      uiNotice.id,
+      qty,
+      editNote.trim() || null,
+    );
+    setLoading(false);
+    if (!result.ok) {
+      setUiNotice({ kind: "error", message: result.error });
+      return;
+    }
+    setUiNotice({
+      kind: "success",
+      title: "Transaksi Diperbarui",
+      message: result.message ?? "Berhasil diedit.",
+    });
+  }
+
+  async function confirmDelete() {
+    if (!uiNotice || uiNotice.kind !== "confirm-delete") return;
+    setLoading(true);
+    const result = await deleteMovementAction(uiNotice.id);
+    setLoading(false);
+    if (!result.ok) {
+      setUiNotice({ kind: "error", message: result.error });
+      return;
+    }
+    setUiNotice({
+      kind: "success",
+      title: "Transaksi Dihapus",
+      message: result.message ?? "Berhasil dihapus.",
+    });
   }
 
   return (
@@ -347,36 +433,96 @@ export function MonitoringClient({
       </form>
 
       <div className="blc-mon-summary">
-        Ada <strong>{pending}</strong> withdraw{" "}
-        <strong className="blc-mon-summary-hl">kategori Senjata</strong> yang belum
-        dikembalikan.{" "}
-        <span className="blc-mon-summary-note">
-          (Ammo / Material / lainnya tidak perlu pengembalian.)
-        </span>
+        {pending > 0 ? (
+          <>
+            Ada <strong className="blc-mon-summary-hl">{pending} senjata</strong> yang
+            belum dikembalikan ke gudang.{" "}
+            <span className="blc-mon-summary-note">
+              Cek daftar merah di bawah, lalu di Detail aktivitas tekan tombol
+              pengembalian.
+            </span>
+          </>
+        ) : (
+          <>
+            Semua senjata sudah aman / dikembalikan.{" "}
+            <span className="blc-mon-summary-note">
+              (Ammo, material, dan barang lain tidak perlu dikembalikan.)
+            </span>
+          </>
+        )}
       </div>
 
       <section className="blc-mon-section">
-        <h2 className="blc-mon-section-title">Sudah input</h2>
+        <h2 className="blc-mon-section-title">Ringkas orang</h2>
         {notices.length === 0 ? (
           <div className="blc-empty" style={{ padding: "0.75rem" }}>
-            Belum ada aktivitas di rentang ini.
+            Belum ada yang input di rentang tanggal ini.
           </div>
         ) : (
-          <div className="blc-mon-input-list">
-            {notices.map((n) => (
-              <div
-                key={n.user_id}
-                className={`blc-mon-input-chip ${n.pending_weapon > 0 ? "is-pending" : ""}`}
-              >
-                <strong>{n.name}</strong>
-                <span>
-                  {n.total} input · {n.last_at}
-                  {n.pending_weapon > 0
-                    ? ` · ${n.pending_weapon} senjata belum kembali`
-                    : ""}
-                </span>
+          <div className="blc-mon-people">
+            {pendingPeople.length > 0 ? (
+              <div className="blc-mon-people-block">
+                <p className="blc-mon-people-label is-warn">
+                  Belum kembalikan senjata ({pendingPeople.length} orang)
+                </p>
+                <div className="blc-mon-people-grid">
+                  {pendingPeople.map((n) => (
+                    <button
+                      key={n.user_id}
+                      type="button"
+                      className="blc-mon-person is-pending"
+                      onClick={() => focusMember(n.user_id)}
+                      title="Lihat detail orang ini"
+                    >
+                      <strong>{n.name}</strong>
+                      <span className="blc-mon-person-stat">
+                        {n.pending_weapon} senjata
+                      </span>
+                      <span className="blc-mon-person-meta">
+                        {n.total} transaksi · {n.last_at}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            ))}
+            ) : null}
+
+            {okPeople.length > 0 ? (
+              <div className="blc-mon-people-block">
+                <p className="blc-mon-people-label is-ok">
+                  Sudah aman ({okPeople.length} orang)
+                </p>
+                <div className="blc-mon-people-tags">
+                  {okPreview.map((n) => (
+                    <button
+                      key={n.user_id}
+                      type="button"
+                      className="blc-mon-person-tag"
+                      onClick={() => focusMember(n.user_id)}
+                      title="Lihat detail orang ini"
+                    >
+                      {n.name}
+                      <em>{n.last_at}</em>
+                    </button>
+                  ))}
+                </div>
+                {okPeople.length > 8 ? (
+                  <button
+                    type="button"
+                    className="blc-mon-people-more"
+                    onClick={() => setShowAllOk((v) => !v)}
+                  >
+                    {showAllOk
+                      ? "Tampilkan lebih sedikit"
+                      : `Lihat ${okPeople.length - 8} orang lainnya`}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
+            <p className="blc-mon-note" style={{ marginTop: "0.55rem" }}>
+              Ketuk nama untuk melihat detail transaksi orang itu.
+            </p>
           </div>
         )}
       </section>
@@ -434,17 +580,21 @@ export function MonitoringClient({
                         type="button"
                         className="blc-btn blc-btn-return"
                         onClick={() => {
-                          setReturnQty(row.quantity);
+                          const remaining = row.pending_qty ?? row.quantity;
+                          setReturnQty(remaining);
                           setReturnNote("");
                           setUiNotice({
                             kind: "confirm-return",
                             id: row.id,
                             item: row.item,
-                            maxQty: row.quantity,
+                            maxQty: remaining,
                           });
                         }}
                       >
                         Sudah dikembalikan ke gudang
+                        {(row.pending_qty ?? row.quantity) < row.quantity
+                          ? ` (sisa ${row.pending_qty})`
+                          : ""}
                       </button>
                       <button
                         type="button"
@@ -459,6 +609,46 @@ export function MonitoringClient({
                         }}
                       >
                         Tidak bisa dikembalikan
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {isManager ? (
+                    <div className="blc-mon-card-actions blc-mon-mgr-actions">
+                      <button
+                        type="button"
+                        className="blc-btn secondary"
+                        onClick={() => {
+                          setEditQty(row.quantity);
+                          setEditNote(row.note ?? "");
+                          setUiNotice({
+                            kind: "confirm-edit",
+                            id: row.id,
+                            item: row.item,
+                            type: row.type,
+                            type_label: row.type_label,
+                            quantity: row.quantity,
+                            note: row.note,
+                          });
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="blc-btn blc-btn-lost"
+                        onClick={() => {
+                          setUiNotice({
+                            kind: "confirm-delete",
+                            id: row.id,
+                            item: row.item,
+                            type: row.type,
+                            type_label: row.type_label,
+                            quantity: row.quantity,
+                          });
+                        }}
+                      >
+                        Hapus
                       </button>
                     </div>
                   ) : null}
@@ -562,6 +752,91 @@ export function MonitoringClient({
             />
           </div>
         </BlcNoticeOverlay>
+      ) : null}
+
+      {uiNotice?.kind === "confirm-edit" ? (
+        <BlcNoticeOverlay
+          title="Edit Transaksi"
+          message="Ubah jumlah atau catatan. Stok gudang ikut disesuaikan."
+          meta={[
+            { label: "Barang", value: uiNotice.item },
+            { label: "Jenis", value: uiNotice.type_label },
+            { label: "Jumlah awal", value: `x${uiNotice.quantity}` },
+          ]}
+          primaryLabel={loading ? "Menyimpan…" : "Simpan perubahan"}
+          secondaryLabel="Batal"
+          onPrimary={() => {
+            if (!loading) void confirmEdit();
+          }}
+          onSecondary={() => setUiNotice(null)}
+          onDismiss={() => {
+            if (!loading) setUiNotice(null);
+          }}
+        >
+          <div className="blc-field" style={{ marginTop: "0.85rem", textAlign: "left" }}>
+            <label className="blc-label" htmlFor="edit-qty">
+              Jumlah baru
+            </label>
+            <input
+              id="edit-qty"
+              type="number"
+              className="blc-input"
+              min={1}
+              step={1}
+              value={editQty}
+              disabled={loading}
+              onChange={(e) => setEditQty(Number(e.target.value))}
+            />
+            <p className="blc-mon-note" style={{ marginTop: "0.35rem" }}>
+              {uiNotice.type === "in"
+                ? "Naikkan jumlah = stok bertambah; turunkan = stok berkurang."
+                : "Naikkan jumlah = stok berkurang; turunkan = stok bertambah."}
+            </p>
+          </div>
+          <div className="blc-field" style={{ marginTop: "0.75rem", textAlign: "left" }}>
+            <label className="blc-label" htmlFor="edit-note">
+              Catatan
+            </label>
+            <textarea
+              id="edit-note"
+              className="blc-input"
+              rows={2}
+              maxLength={500}
+              value={editNote}
+              disabled={loading}
+              onChange={(e) => setEditNote(e.target.value)}
+              placeholder="Opsional"
+            />
+          </div>
+        </BlcNoticeOverlay>
+      ) : null}
+
+      {uiNotice?.kind === "confirm-delete" ? (
+        <BlcNoticeOverlay
+          title="Hapus Transaksi?"
+          message="Stok akan dikembalikan sesuai jenis transaksi. Aksi ini tidak bisa dibatalkan."
+          meta={[
+            { label: "Barang", value: uiNotice.item },
+            { label: "Jenis", value: uiNotice.type_label },
+            { label: "Jumlah", value: `x${uiNotice.quantity}` },
+            {
+              label: "Efek stok",
+              value:
+                uiNotice.type === "in"
+                  ? `Stok −${uiNotice.quantity}`
+                  : `Stok +${uiNotice.quantity}`,
+            },
+          ]}
+          primaryLabel={loading ? "Menghapus…" : "Ya, hapus"}
+          secondaryLabel="Batal"
+          onPrimary={() => {
+            if (!loading) void confirmDelete();
+          }}
+          onSecondary={() => setUiNotice(null)}
+          onDismiss={() => {
+            if (!loading) setUiNotice(null);
+          }}
+        />
       ) : null}
 
       {uiNotice?.kind === "success" ? (

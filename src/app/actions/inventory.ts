@@ -7,6 +7,8 @@ import {
   createMovement,
   markReturned,
   markUnreturnable,
+  deleteStockMovement,
+  updateStockMovement,
 } from "@/lib/inventory";
 import { sanitizeText } from "@/lib/sanitize";
 import { rateLimit } from "@/lib/rate-limit";
@@ -43,6 +45,42 @@ export async function storeMovementAction(formData: FormData): Promise<ActionRes
 
     if (!["in", "out"].includes(type)) {
       return { ok: false, error: "Tipe transaksi tidak valid." };
+    }
+    if (!Number.isInteger(itemId) || itemId < 1) {
+      return { ok: false, error: "Item tidak valid." };
+    }
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return { ok: false, error: "Jumlah tidak valid." };
+    }
+
+    // Request identik dalam 5 detik → anggap klik dobel, jangan input ulang
+    const since = new Date(Date.now() - 5000);
+    const duplicate = await prisma.stockMovement.findFirst({
+      where: {
+        userId: BigInt(session.user.id),
+        itemId: BigInt(itemId),
+        type,
+        quantity,
+        movementDate: { gte: since },
+      },
+      orderBy: { id: "desc" },
+      include: { item: true },
+    });
+
+    if (duplicate) {
+      const isDeposit = duplicate.type === "in";
+      return {
+        ok: true,
+        successTx: {
+          type: duplicate.type,
+          label: isDeposit ? "Deposit" : "Withdraw",
+          item: duplicate.item?.name ?? "Item",
+          quantity: duplicate.quantity,
+          stock: duplicate.item?.stock ?? 0,
+          note: duplicate.note,
+          message: `${isDeposit ? "Deposit" : "Withdraw"} sudah tercatat (abaikan klik dobel).`,
+        },
+      };
     }
 
     const successTx = await createMovement({
@@ -474,5 +512,70 @@ export async function markUnreturnableAction(
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Gagal menandai." };
+  }
+}
+
+export async function deleteMovementAction(
+  movementId: number,
+): Promise<ActionResult> {
+  try {
+    const session = await requireUser();
+    if (!canManageCatalog(session.user.email)) {
+      return { ok: false, error: "Hanya manager yang bisa menghapus transaksi." };
+    }
+    const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);
+    if (!limited.ok) return { ok: false, error: "Terlalu banyak permintaan." };
+
+    const result = await deleteStockMovement(movementId);
+    revalidatePath("/home/monitoring");
+    revalidatePath("/home/rekap");
+    revalidatePath("/home");
+    return {
+      ok: true,
+      message: `${result.item}: ${result.summary}. Stok ${result.stockBefore} → ${result.stockAfter}.`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Gagal menghapus transaksi.",
+    };
+  }
+}
+
+export async function updateMovementAction(
+  movementId: number,
+  quantity: number,
+  note?: string | null,
+): Promise<ActionResult> {
+  try {
+    const session = await requireUser();
+    if (!canManageCatalog(session.user.email)) {
+      return { ok: false, error: "Hanya manager yang bisa mengedit transaksi." };
+    }
+    const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);
+    if (!limited.ok) return { ok: false, error: "Terlalu banyak permintaan." };
+
+    const result = await updateStockMovement(movementId, { quantity, note });
+    revalidatePath("/home/monitoring");
+    revalidatePath("/home/rekap");
+    revalidatePath("/home");
+
+    const qtyChanged = result.qtyBefore !== result.qtyAfter;
+    const stockChanged = result.stockBefore !== result.stockAfter;
+    return {
+      ok: true,
+      message: qtyChanged
+        ? `${result.item}: jumlah ${result.qtyBefore} → ${result.qtyAfter}.${
+            stockChanged
+              ? ` Stok ${result.stockBefore} → ${result.stockAfter}.`
+              : ""
+          }`
+        : `${result.item}: catatan diperbarui.`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Gagal mengedit transaksi.",
+    };
   }
 }

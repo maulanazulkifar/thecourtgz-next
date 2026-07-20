@@ -1022,6 +1022,117 @@ label.blc-label {
   background: rgba(70, 28, 48, 0.28);
 }
 
+.blc-mon-people {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.blc-mon-people-label {
+  margin: 0 0 0.45rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--blc-muted);
+}
+
+.blc-mon-people-label.is-warn {
+  color: #efb0b0;
+}
+
+.blc-mon-people-label.is-ok {
+  color: #b7e0b9;
+}
+
+.blc-mon-people-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.45rem;
+}
+
+.blc-mon-person {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.12rem;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid rgba(180, 90, 120, 0.5);
+  background: rgba(70, 28, 48, 0.28);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.blc-mon-person:hover {
+  border-color: rgba(239, 176, 176, 0.7);
+  background: rgba(90, 35, 55, 0.35);
+}
+
+.blc-mon-person strong {
+  color: #f5e8e8;
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.blc-mon-person-stat {
+  color: #efb0b0;
+  font-family: "Cinzel", serif;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.blc-mon-person-meta {
+  color: var(--blc-muted);
+  font-size: 0.7rem;
+}
+
+.blc-mon-people-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.blc-mon-person-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(111, 191, 115, 0.35);
+  background: rgba(40, 70, 45, 0.22);
+  color: #d8e8d8;
+  font-size: 0.78rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.blc-mon-person-tag:hover {
+  border-color: rgba(111, 191, 115, 0.55);
+  background: rgba(40, 70, 45, 0.35);
+}
+
+.blc-mon-person-tag em {
+  font-style: normal;
+  color: var(--blc-muted);
+  font-size: 0.7rem;
+}
+
+.blc-mon-people-more {
+  margin-top: 0.45rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--blc-gold-bright);
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .blc-mon-cards {
   display: flex;
   flex-direction: column;
@@ -1148,6 +1259,18 @@ label.blc-label {
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.1em;
+}
+
+.blc-mon-card-actions.blc-mon-mgr-actions {
+  flex-direction: row;
+}
+
+.blc-mon-card-actions.blc-mon-mgr-actions .blc-btn {
+  flex: 1;
+  width: auto;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
 }
 
 .blc-notice-wrap {
