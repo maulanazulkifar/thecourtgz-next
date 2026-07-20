@@ -13,7 +13,7 @@ export default async function EditUserPage({
   params: Promise<{ id: string }>;
 }) {
   const session = await requireSuperadmin();
-  const canManage = canManageCatalog(session.user.email);
+  const canManage = await canManageCatalog(session.user.email);
   const { id } = await params;
 
   const user = await prisma.user.findUnique({ where: { id: BigInt(id) } });

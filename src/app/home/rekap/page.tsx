@@ -108,7 +108,7 @@ export default async function RecapPage({
 }) {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
-  const canFix = canManageCatalog(session.user.email);
+  const canFix = await canManageCatalog(session.user.email);
   const params = await searchParams;
   let tab = params.tab ?? "stok";
   if (!["stok", "deposit", "withdraw"].includes(tab)) tab = "stok";

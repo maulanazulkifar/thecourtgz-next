@@ -141,7 +141,7 @@ export async function storeCategoryAction(formData: FormData): Promise<ActionRes
 export async function updateCategoryAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
-    if (!canManageCatalog(session.user.email)) {
+    if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan mengedit kategori." };
     }
 
@@ -188,7 +188,7 @@ export async function updateCategoryAction(formData: FormData): Promise<ActionRe
 export async function deleteCategoryAction(idRaw: string | number): Promise<ActionResult> {
   try {
     const session = await requireUser();
-    if (!canManageCatalog(session.user.email)) {
+    if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan menghapus kategori." };
     }
 
@@ -302,7 +302,7 @@ export async function storeItemAction(formData: FormData): Promise<ActionResult>
 export async function updateItemAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
-    if (!canManageCatalog(session.user.email)) {
+    if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan mengedit item." };
     }
 
@@ -407,7 +407,7 @@ export async function updateItemAction(formData: FormData): Promise<ActionResult
 export async function deleteItemAction(idRaw: string | number): Promise<ActionResult> {
   try {
     const session = await requireUser();
-    if (!canManageCatalog(session.user.email)) {
+    if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan menghapus item." };
     }
 
@@ -449,8 +449,14 @@ export async function markReturnedAction(
       select: { userId: true, quantity: true },
     });
     if (!movement) return { ok: false, error: "Transaksi tidak ditemukan." };
+    const isManager = await canManageCatalog(session.user.email);
     if (
-      !canActOnWeaponReturn(session.user.email, session.user.id, movement.userId)
+      !canActOnWeaponReturn(
+        session.user.email,
+        session.user.id,
+        movement.userId,
+        isManager,
+      )
     ) {
       return {
         ok: false,
@@ -495,8 +501,14 @@ export async function markUnreturnableAction(
       select: { userId: true },
     });
     if (!movement) return { ok: false, error: "Transaksi tidak ditemukan." };
+    const isManager = await canManageCatalog(session.user.email);
     if (
-      !canActOnWeaponReturn(session.user.email, session.user.id, movement.userId)
+      !canActOnWeaponReturn(
+        session.user.email,
+        session.user.id,
+        movement.userId,
+        isManager,
+      )
     ) {
       return {
         ok: false,
@@ -520,7 +532,7 @@ export async function deleteMovementAction(
 ): Promise<ActionResult> {
   try {
     const session = await requireUser();
-    if (!canManageCatalog(session.user.email)) {
+    if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Hanya manager yang bisa menghapus transaksi." };
     }
     const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);
@@ -549,7 +561,7 @@ export async function updateMovementAction(
 ): Promise<ActionResult> {
   try {
     const session = await requireUser();
-    if (!canManageCatalog(session.user.email)) {
+    if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Hanya manager yang bisa mengedit transaksi." };
     }
     const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);

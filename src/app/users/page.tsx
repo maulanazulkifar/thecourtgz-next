@@ -8,7 +8,7 @@ import { canManageCatalog } from "@/lib/category-access";
 
 export default async function UsersPage() {
   const session = await requireSuperadmin();
-  const canManage = canManageCatalog(session.user.email);
+  const canManage = await canManageCatalog(session.user.email);
 
   const users = await prisma.user.findMany({
     orderBy: { id: "desc" },

@@ -11,7 +11,7 @@ import { redirect } from "next/navigation";
 export default async function ItemPage() {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
-  const canManage = canManageCatalog(session.user.email);
+  const canManage = await canManageCatalog(session.user.email);
   if (!canManage) redirect("/home");
 
   const categories = await prisma.category.findMany({

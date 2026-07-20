@@ -7,7 +7,7 @@ import { canManageCatalog } from "@/lib/category-access";
 export default async function DashboardPage() {
   const session = await requireStaff();
   const isSuper = session.user.roles?.includes("superadmin");
-  const canManage = canManageCatalog(session.user.email);
+  const canManage = await canManageCatalog(session.user.email);
 
   const [users, items, movements] = await Promise.all([
     prisma.user.count(),

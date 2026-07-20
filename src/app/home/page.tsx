@@ -10,7 +10,7 @@ import { canManageCatalog } from "@/lib/category-access";
 export default async function HomePage() {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
-  const canManage = canManageCatalog(session.user.email);
+  const canManage = await canManageCatalog(session.user.email);
 
   const categories = await prisma.category.findMany({
     include: {

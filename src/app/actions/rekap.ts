@@ -10,7 +10,7 @@ export async function reconcileStockAction() {
   if (!session?.user?.id) {
     return { ok: false as const, error: "Unauthorized" };
   }
-  if (!canManageCatalog(session.user.email)) {
+  if (!(await canManageCatalog(session.user.email))) {
     return { ok: false as const, error: "Hanya manager yang bisa menyeimbangkan stok." };
   }
 

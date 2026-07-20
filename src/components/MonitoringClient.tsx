@@ -8,7 +8,6 @@ import {
   deleteMovementAction,
   updateMovementAction,
 } from "@/app/actions/inventory";
-import { canActOnWeaponReturn, canManageCatalog } from "@/lib/category-access";
 import { BlcNoticeOverlay } from "@/components/BlcNoticeOverlay";
 
 type Notice = {
@@ -86,6 +85,7 @@ function statusBadge(row: Row): { label: string; klass: string } {
 export function MonitoringClient({
   viewerId,
   viewerEmail,
+  canManage = false,
   initialFrom,
   initialTo,
   initialAllDates,
@@ -100,6 +100,7 @@ export function MonitoringClient({
 }: {
   viewerId: string;
   viewerEmail: string | null | undefined;
+  canManage?: boolean;
   initialFrom: string;
   initialTo: string;
   initialAllDates: boolean;
@@ -131,7 +132,7 @@ export function MonitoringClient({
   const [showAllOk, setShowAllOk] = useState(false);
   const [uiNotice, setUiNotice] = useState<NoticeUi | null>(null);
 
-  const isManager = canManageCatalog(viewerEmail);
+  const isManager = canManage;
 
   const pendingPeople = notices
     .filter((n) => n.pending_weapon > 0)
@@ -217,7 +218,7 @@ export function MonitoringClient({
   function canShowReturnActions(row: Row) {
     return (
       row.needs_return &&
-      canActOnWeaponReturn(viewerEmail, viewerId, row.user_id)
+      (isManager || String(viewerId) === String(row.user_id))
     );
   }
 

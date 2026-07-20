@@ -5,30 +5,41 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { signOut } from "next-auth/react";
 
-const links = [
-  { href: "/home", label: "Transaksi", match: (p: string) => p === "/home" },
+const links: {
+  href: string;
+  label: string;
+  managerOnly?: boolean;
+  match: (p: string, tab?: string) => boolean;
+}[] = [
+  { href: "/home", label: "Transaksi", match: (p) => p === "/home" },
   {
     href: "/home/rekap?tab=stok",
     label: "Cek Stok",
-    match: (p: string) =>
+    match: (p) =>
       p.startsWith("/home/rekap") || p.startsWith("/home/audit-stok"),
   },
   {
     href: "/home/monitoring",
     label: "Monitoring",
-    match: (p: string) => p.startsWith("/home/monitoring"),
+    match: (p) => p.startsWith("/home/monitoring"),
   },
   {
     href: "/home/kategori",
     label: "+ Kategori",
     managerOnly: true,
-    match: (p: string) => p.startsWith("/home/kategori"),
+    match: (p) => p.startsWith("/home/kategori"),
   },
   {
     href: "/home/item",
     label: "+ Item",
     managerOnly: true,
-    match: (p: string) => p.startsWith("/home/item"),
+    match: (p) => p.startsWith("/home/item"),
+  },
+  {
+    href: "/home/manager",
+    label: "Manager",
+    managerOnly: true,
+    match: (p) => p.startsWith("/home/manager"),
   },
 ];
 

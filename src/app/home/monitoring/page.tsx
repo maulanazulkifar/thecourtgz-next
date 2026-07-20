@@ -23,7 +23,7 @@ export default async function MonitoringPage({
 }) {
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
-  const canManage = canManageCatalog(session.user.email);
+  const canManage = await canManageCatalog(session.user.email);
   const params = await searchParams;
 
   const today = new Date().toISOString().slice(0, 10);
@@ -79,6 +79,7 @@ export default async function MonitoringPage({
       <MonitoringClient
         viewerId={session.user.id}
         viewerEmail={session.user.email}
+        canManage={canManage}
         initialFrom={from}
         initialTo={to}
         initialAllDates={useAllDates}
