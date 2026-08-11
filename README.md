@@ -19,10 +19,17 @@ npm install
 cp .env.example .env
 # isi DATABASE_URL, AUTH_SECRET, Discord, dll.
 npx prisma generate
+# Jalankan migrasi multi-server (sekali):
+# psql "$DATABASE_URL" -f prisma/sql/20260811_servers.sql
+# (App juga bisa auto-ensure kolom saat pertama load)
 npm run dev
 ```
 
 Buka [http://localhost:3000](http://localhost:3000).
+
+### Multi-server
+
+Setelah login ke `/home`, user wajib pilih **Satu Mimpi Roleplay** atau **Cerita Roleplayku**. Pilihan disimpan di cookie `blc_server_id` dan bisa diganti dari navbar. Transaksi, stok, kategori, dan item difilter per `server_id`.
 
 ### Discord Developer Portal
 

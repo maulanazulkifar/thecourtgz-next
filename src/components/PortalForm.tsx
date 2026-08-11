@@ -19,6 +19,7 @@ type SuccessTx = {
 export function PortalForm({
   userName,
   avatarUrl,
+  serverName,
   categories,
   initialItems,
   initialVersion,
@@ -26,6 +27,7 @@ export function PortalForm({
 }: {
   userName: string;
   avatarUrl: string;
+  serverName: string;
   categories: Category[];
   initialItems: Record<string, ItemOpt[]>;
   initialVersion: number;
@@ -153,6 +155,9 @@ export function PortalForm({
           <div className="blc-home-brand">
             <h1>BLACK LOTUS COURT</h1>
             <p>{userName} · Discord</p>
+            <p className="blc-home-server">
+              Server: <strong>{serverName}</strong>
+            </p>
           </div>
           <img className="blc-home-avatar" src={avatarUrl} alt={userName} />
         </div>

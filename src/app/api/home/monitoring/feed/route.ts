@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { getStockVersion } from "@/lib/stock-version";
 import { buildMonitoringPayload } from "@/lib/inventory";
 import { rateLimit } from "@/lib/rate-limit";
+import { getSelectedServer } from "@/lib/servers";
 import { endOfDay, parseISO, startOfDay } from "date-fns";
 
 export async function GET(req: NextRequest) {
@@ -11,12 +12,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const server = await getSelectedServer();
+  if (!server) {
+    return NextResponse.json({ error: "Pilih server dulu." }, { status: 400 });
+  }
+
   const limited = rateLimit(`stock-poll:${session.user.id}`, 60, 60_000);
   if (!limited.ok) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  const version = await getStockVersion();
+  const version = await getStockVersion(server.id);
   const clientVersion = Number(req.nextUrl.searchParams.get("v") ?? -1);
   const all = (req.nextUrl.searchParams.get("all") ?? "").trim();
   const fromRaw = (req.nextUrl.searchParams.get("from") ?? "").trim();
@@ -53,7 +59,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const payload = await buildMonitoringPayload(fromDate, toDate, {
+  const payload = await buildMonitoringPayload(server.id, fromDate, toDate, {
     memberId: member,
     categoryId: category,
   });

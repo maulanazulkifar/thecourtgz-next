@@ -4,6 +4,7 @@ import { SimpleForm } from "@/components/SimpleForm";
 import { storeCategoryAction } from "@/app/actions/inventory";
 import { canManageCatalog } from "@/lib/category-access";
 import { requireSession } from "@/lib/session";
+import { requireSelectedServer } from "@/lib/servers";
 import { prisma } from "@/lib/prisma";
 import { isStaff } from "@/lib/roles";
 import { redirect } from "next/navigation";
@@ -13,8 +14,10 @@ export default async function CategoryPage() {
   const staff = isStaff(session.user.roles ?? []);
   const canManage = await canManageCatalog(session.user.email);
   if (!canManage) redirect("/home");
+  const server = await requireSelectedServer();
 
   const categories = await prisma.category.findMany({
+    where: { serverId: BigInt(server.id) },
     orderBy: { name: "asc" },
     select: { id: true, name: true, description: true },
   });
@@ -23,7 +26,9 @@ export default async function CategoryPage() {
     <BlcShell showNav isStaff={staff} canManageCatalog={canManage} wide scroll>
       <div className="blc-page-head">
         <h1>Tambah Kategori</h1>
-        <p>Buat kategori inventori baru (mis. Senjata, Material).</p>
+        <p>
+          Buat kategori inventori baru untuk <strong>{server.name}</strong>.
+        </p>
       </div>
 
       <div className="blc-panel" style={{ marginBottom: "1rem" }}>

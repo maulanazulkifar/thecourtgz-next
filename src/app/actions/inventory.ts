@@ -14,6 +14,7 @@ import { sanitizeText } from "@/lib/sanitize";
 import { rateLimit } from "@/lib/rate-limit";
 import { bumpStockVersion } from "@/lib/stock-version";
 import { canActOnWeaponReturn, canManageCatalog } from "@/lib/category-access";
+import { getSelectedServer } from "@/lib/servers";
 
 function randomSkuSuffix() {
   return Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -31,9 +32,16 @@ async function requireUser() {
   return session;
 }
 
+async function requireServerForAction() {
+  const server = await getSelectedServer();
+  if (!server) throw new Error("Pilih server dulu di halaman Transaksi.");
+  return server;
+}
+
 export async function storeMovementAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);
     if (!limited.ok) return { ok: false, error: "Terlalu banyak permintaan. Coba lagi sebentar." };
 
@@ -57,6 +65,7 @@ export async function storeMovementAction(formData: FormData): Promise<ActionRes
     const since = new Date(Date.now() - 5000);
     const duplicate = await prisma.stockMovement.findFirst({
       where: {
+        serverId: BigInt(server.id),
         userId: BigInt(session.user.id),
         itemId: BigInt(itemId),
         type,
@@ -84,6 +93,7 @@ export async function storeMovementAction(formData: FormData): Promise<ActionRes
     }
 
     const successTx = await createMovement({
+      serverId: server.id,
       categoryId,
       itemId,
       type: type as "in" | "out",
@@ -105,6 +115,7 @@ export async function storeMovementAction(formData: FormData): Promise<ActionRes
 export async function storeCategoryAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);
     if (!limited.ok) return { ok: false, error: "Terlalu banyak permintaan." };
 
@@ -117,19 +128,23 @@ export async function storeCategoryAction(formData: FormData): Promise<ActionRes
     if (!name) return { ok: false, error: "Nama kategori wajib diisi." };
 
     const exists = await prisma.category.findFirst({
-      where: { name: { equals: name, mode: "insensitive" } },
+      where: {
+        serverId: BigInt(server.id),
+        name: { equals: name, mode: "insensitive" },
+      },
     });
-    if (exists) return { ok: false, error: "Nama kategori sudah dipakai." };
+    if (exists) return { ok: false, error: "Nama kategori sudah dipakai di server ini." };
 
     await prisma.category.create({
       data: {
+        serverId: BigInt(server.id),
         name,
         description,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
     });
-    await bumpStockVersion();
+    await bumpStockVersion(server.id);
     revalidatePath("/home");
     revalidatePath("/home/kategori");
     return { ok: true, message: "Kategori berhasil ditambahkan." };
@@ -141,6 +156,7 @@ export async function storeCategoryAction(formData: FormData): Promise<ActionRes
 export async function updateCategoryAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan mengedit kategori." };
     }
@@ -160,22 +176,25 @@ export async function updateCategoryAction(formData: FormData): Promise<ActionRe
     }
     if (!name) return { ok: false, error: "Nama kategori wajib diisi." };
 
-    const existing = await prisma.category.findUnique({ where: { id: BigInt(id) } });
+    const existing = await prisma.category.findFirst({
+      where: { id: BigInt(id), serverId: BigInt(server.id) },
+    });
     if (!existing) return { ok: false, error: "Kategori tidak ditemukan." };
 
     const duplicate = await prisma.category.findFirst({
       where: {
+        serverId: BigInt(server.id),
         name: { equals: name, mode: "insensitive" },
         NOT: { id: BigInt(id) },
       },
     });
-    if (duplicate) return { ok: false, error: "Nama kategori sudah dipakai." };
+    if (duplicate) return { ok: false, error: "Nama kategori sudah dipakai di server ini." };
 
     await prisma.category.update({
       where: { id: BigInt(id) },
       data: { name, description, updatedAt: new Date() },
     });
-    await bumpStockVersion();
+    await bumpStockVersion(server.id);
     revalidatePath("/home");
     revalidatePath("/home/kategori");
     revalidatePath("/home/item");
@@ -188,6 +207,7 @@ export async function updateCategoryAction(formData: FormData): Promise<ActionRe
 export async function deleteCategoryAction(idRaw: string | number): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan menghapus kategori." };
     }
@@ -200,11 +220,13 @@ export async function deleteCategoryAction(idRaw: string | number): Promise<Acti
       return { ok: false, error: "Kategori tidak valid." };
     }
 
-    const existing = await prisma.category.findUnique({ where: { id: BigInt(id) } });
+    const existing = await prisma.category.findFirst({
+      where: { id: BigInt(id), serverId: BigInt(server.id) },
+    });
     if (!existing) return { ok: false, error: "Kategori tidak ditemukan." };
 
     await prisma.category.delete({ where: { id: BigInt(id) } });
-    await bumpStockVersion();
+    await bumpStockVersion(server.id);
     revalidatePath("/home");
     revalidatePath("/home/kategori");
     revalidatePath("/home/item");
@@ -217,6 +239,7 @@ export async function deleteCategoryAction(idRaw: string | number): Promise<Acti
 export async function storeItemAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     const limited = rateLimit(`movements:${session.user.id}`, 20, 60_000);
     if (!limited.ok) return { ok: false, error: "Terlalu banyak permintaan." };
 
@@ -238,8 +261,10 @@ export async function storeItemAction(formData: FormData): Promise<ActionResult>
       return { ok: false, error: "Stok tidak valid." };
     }
 
-    const category = await prisma.category.findUnique({ where: { id: BigInt(categoryId) } });
-    if (!category) return { ok: false, error: "Kategori tidak ditemukan." };
+    const category = await prisma.category.findFirst({
+      where: { id: BigInt(categoryId), serverId: BigInt(server.id) },
+    });
+    if (!category) return { ok: false, error: "Kategori tidak ditemukan di server ini." };
 
     if (!sku) {
       sku = `${name
@@ -249,13 +274,16 @@ export async function storeItemAction(formData: FormData): Promise<ActionResult>
         .toUpperCase()}-${randomSkuSuffix()}`;
     } else {
       sku = sku.toUpperCase();
-      const skuExists = await prisma.item.findUnique({ where: { sku } });
-      if (skuExists) return { ok: false, error: "SKU sudah dipakai." };
+      const skuExists = await prisma.item.findFirst({
+        where: { serverId: BigInt(server.id), sku },
+      });
+      if (skuExists) return { ok: false, error: "SKU sudah dipakai di server ini." };
     }
 
     await prisma.$transaction(async (tx) => {
       const created = await tx.item.create({
         data: {
+          serverId: BigInt(server.id),
           categoryId: BigInt(categoryId),
           name,
           sku,
@@ -269,6 +297,7 @@ export async function storeItemAction(formData: FormData): Promise<ActionResult>
       if (stock > 0) {
         await tx.stockMovement.create({
           data: {
+            serverId: BigInt(server.id),
             itemId: created.id,
             userId: BigInt(session.user.id),
             type: "in",
@@ -283,7 +312,7 @@ export async function storeItemAction(formData: FormData): Promise<ActionResult>
         });
       }
     });
-    await bumpStockVersion();
+    await bumpStockVersion(server.id);
     revalidatePath("/home");
     revalidatePath("/home/item");
     revalidatePath("/home/rekap");
@@ -302,6 +331,7 @@ export async function storeItemAction(formData: FormData): Promise<ActionResult>
 export async function updateItemAction(formData: FormData): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan mengedit item." };
     }
@@ -331,18 +361,26 @@ export async function updateItemAction(formData: FormData): Promise<ActionResult
       return { ok: false, error: "Stok tidak valid." };
     }
 
-    const existing = await prisma.item.findUnique({ where: { id: BigInt(id) } });
+    const existing = await prisma.item.findFirst({
+      where: { id: BigInt(id), serverId: BigInt(server.id) },
+    });
     if (!existing) return { ok: false, error: "Item tidak ditemukan." };
 
-    const category = await prisma.category.findUnique({ where: { id: BigInt(categoryId) } });
-    if (!category) return { ok: false, error: "Kategori tidak ditemukan." };
+    const category = await prisma.category.findFirst({
+      where: { id: BigInt(categoryId), serverId: BigInt(server.id) },
+    });
+    if (!category) return { ok: false, error: "Kategori tidak ditemukan di server ini." };
 
     if (sku) {
       sku = sku.toUpperCase();
       const skuExists = await prisma.item.findFirst({
-        where: { sku, NOT: { id: BigInt(id) } },
+        where: {
+          serverId: BigInt(server.id),
+          sku,
+          NOT: { id: BigInt(id) },
+        },
       });
-      if (skuExists) return { ok: false, error: "SKU sudah dipakai." };
+      if (skuExists) return { ok: false, error: "SKU sudah dipakai di server ini." };
     } else {
       sku = existing.sku;
     }
@@ -365,6 +403,7 @@ export async function updateItemAction(formData: FormData): Promise<ActionResult
       if (stockDelta > 0) {
         await tx.stockMovement.create({
           data: {
+            serverId: BigInt(server.id),
             itemId: BigInt(id),
             userId: BigInt(session.user.id),
             type: "in",
@@ -380,6 +419,7 @@ export async function updateItemAction(formData: FormData): Promise<ActionResult
       } else if (stockDelta < 0) {
         await tx.stockMovement.create({
           data: {
+            serverId: BigInt(server.id),
             itemId: BigInt(id),
             userId: BigInt(session.user.id),
             type: "out",
@@ -394,7 +434,7 @@ export async function updateItemAction(formData: FormData): Promise<ActionResult
         });
       }
     });
-    await bumpStockVersion();
+    await bumpStockVersion(server.id);
     revalidatePath("/home");
     revalidatePath("/home/item");
     revalidatePath("/home/rekap");
@@ -407,6 +447,7 @@ export async function updateItemAction(formData: FormData): Promise<ActionResult
 export async function deleteItemAction(idRaw: string | number): Promise<ActionResult> {
   try {
     const session = await requireUser();
+    const server = await requireServerForAction();
     if (!(await canManageCatalog(session.user.email))) {
       return { ok: false, error: "Tidak diizinkan menghapus item." };
     }
@@ -419,11 +460,13 @@ export async function deleteItemAction(idRaw: string | number): Promise<ActionRe
       return { ok: false, error: "Item tidak valid." };
     }
 
-    const existing = await prisma.item.findUnique({ where: { id: BigInt(id) } });
+    const existing = await prisma.item.findFirst({
+      where: { id: BigInt(id), serverId: BigInt(server.id) },
+    });
     if (!existing) return { ok: false, error: "Item tidak ditemukan." };
 
     await prisma.item.delete({ where: { id: BigInt(id) } });
-    await bumpStockVersion();
+    await bumpStockVersion(server.id);
     revalidatePath("/home");
     revalidatePath("/home/item");
     revalidatePath("/home/rekap");

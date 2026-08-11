@@ -1,4 +1,5 @@
 // Maps to existing Laravel / Supabase tables — do NOT prisma migrate against prod.
+// Gunakan prisma/sql/*.sql untuk perubahan schema (jalankan manual di DB).
 
 generator client {
   provider = "prisma-client"
@@ -7,6 +8,21 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+model Server {
+  id        BigInt    @id @default(autoincrement())
+  name      String
+  slug      String    @unique
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime? @map("created_at")
+  updatedAt DateTime? @map("updated_at")
+
+  categories     Category[]
+  items          Item[]
+  stockMovements StockMovement[]
+
+  @@map("servers")
 }
 
 model User {
@@ -33,33 +49,41 @@ model User {
 
 model Category {
   id          BigInt    @id @default(autoincrement())
+  serverId    BigInt    @map("server_id")
   name        String
   description String?
   createdAt   DateTime? @map("created_at")
   updatedAt   DateTime? @map("updated_at")
   items       Item[]
+  server      Server    @relation(fields: [serverId], references: [id], onDelete: Restrict)
 
+  @@index([serverId])
   @@map("categories")
 }
 
 model Item {
   id          BigInt    @id @default(autoincrement())
+  serverId    BigInt    @map("server_id")
   categoryId  BigInt    @map("category_id")
   name        String
-  sku         String?   @unique
+  sku         String?
   stock       Int       @default(0)
   description String?
   createdAt   DateTime? @map("created_at")
   updatedAt   DateTime? @map("updated_at")
 
+  server    Server          @relation(fields: [serverId], references: [id], onDelete: Restrict)
   category  Category        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   movements StockMovement[]
 
+  @@unique([serverId, sku])
+  @@index([serverId])
   @@map("items")
 }
 
 model StockMovement {
   id                 BigInt    @id @default(autoincrement())
+  serverId           BigInt    @map("server_id")
   itemId             BigInt    @map("item_id")
   userId             BigInt    @map("user_id")
   type               String
@@ -77,6 +101,7 @@ model StockMovement {
   createdAt          DateTime? @map("created_at")
   updatedAt          DateTime? @map("updated_at")
 
+  server            Server         @relation(fields: [serverId], references: [id], onDelete: Restrict)
   item              Item           @relation(fields: [itemId], references: [id], onDelete: Cascade)
   user              User           @relation("MovementUser", fields: [userId], references: [id], onDelete: Cascade)
   returnedByUser    User?          @relation("ReturnedBy", fields: [returnedBy], references: [id], onDelete: SetNull)
@@ -84,6 +109,8 @@ model StockMovement {
   returnMovement    StockMovement? @relation("ReturnLink", fields: [returnMovementId], references: [id], onDelete: SetNull)
   returnedFrom      StockMovement[] @relation("ReturnLink")
 
+  @@index([serverId])
+  @@index([serverId, movementDate])
   @@map("stock_movements")
 }
 

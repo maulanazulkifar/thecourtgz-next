@@ -14,22 +14,27 @@ function serializePhpInt(n: number): string {
   return `i:${n};`;
 }
 
-export async function getStockVersion(): Promise<number> {
+export function stockVersionKey(serverId: number | bigint) {
+  return `${STOCK_VERSION_KEY}.s.${serverId}`;
+}
+
+export async function getStockVersion(serverId: number | bigint): Promise<number> {
   const row = await prisma.cacheEntry.findUnique({
-    where: { key: STOCK_VERSION_KEY },
+    where: { key: stockVersionKey(serverId) },
   });
   return parseCacheInt(row?.value);
 }
 
-export async function bumpStockVersion(): Promise<number> {
-  const current = await getStockVersion();
+export async function bumpStockVersion(serverId: number | bigint): Promise<number> {
+  const current = await getStockVersion(serverId);
   const next = current + 1;
   const expiration = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365 * 10;
+  const key = stockVersionKey(serverId);
 
   await prisma.cacheEntry.upsert({
-    where: { key: STOCK_VERSION_KEY },
+    where: { key },
     create: {
-      key: STOCK_VERSION_KEY,
+      key,
       value: serializePhpInt(next),
       expiration,
     },

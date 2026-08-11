@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { canManageCatalog } from "@/lib/category-access";
 import { reconcileStockLedger } from "@/lib/inventory";
+import { getSelectedServer } from "@/lib/servers";
 
 export async function reconcileStockAction() {
   const session = await auth();
@@ -15,14 +16,18 @@ export async function reconcileStockAction() {
   }
 
   try {
-    const fixed = await reconcileStockLedger();
+    const server = await getSelectedServer();
+    if (!server) {
+      return { ok: false as const, error: "Pilih server dulu di halaman Transaksi." };
+    }
+    const fixed = await reconcileStockLedger(server.id);
     revalidatePath("/home/rekap");
     revalidatePath("/home");
     return {
       ok: true as const,
       message:
         fixed > 0
-          ? `Stok diseimbangkan ke riwayat transaksi (${fixed} item diperbarui). Duplikat penyesuaian dihapus.`
+          ? `Stok diseimbangkan ke riwayat transaksi (${fixed} item diperbarui) di ${server.name}.`
           : "Tidak ada selisih yang perlu diperbaiki.",
     };
   } catch (e) {

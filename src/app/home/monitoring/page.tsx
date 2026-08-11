@@ -1,6 +1,7 @@
 import { BlcShell } from "@/components/BlcShell";
 import { MonitoringClient } from "@/components/MonitoringClient";
 import { requireSession } from "@/lib/session";
+import { requireSelectedServer } from "@/lib/servers";
 import { isStaff } from "@/lib/roles";
 import { canManageCatalog } from "@/lib/category-access";
 import {
@@ -24,6 +25,7 @@ export default async function MonitoringPage({
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
   const canManage = await canManageCatalog(session.user.email);
+  const server = await requireSelectedServer();
   const params = await searchParams;
 
   const today = new Date().toISOString().slice(0, 10);
@@ -66,12 +68,12 @@ export default async function MonitoringPage({
   }
 
   const [payload, filterOptions, stockVersion] = await Promise.all([
-    buildMonitoringPayload(fromDate, toDate, {
+    buildMonitoringPayload(server.id, fromDate, toDate, {
       memberId: member,
       categoryId: category,
     }),
-    getMonitoringFilterOptions(),
-    getStockVersion(),
+    getMonitoringFilterOptions(server.id),
+    getStockVersion(server.id),
   ]);
 
   return (

@@ -5,6 +5,7 @@ import { bumpStockVersion } from "@/lib/stock-version";
 import { format } from "date-fns";
 
 export type MovementInput = {
+  serverId: number;
   categoryId: number;
   itemId: number;
   type: "in" | "out";
@@ -17,6 +18,7 @@ export type MovementInput = {
 export async function createMovement(input: MovementInput) {
   const note = sanitizeText(input.note ?? null, 500);
   const qty = input.quantity;
+  const serverId = BigInt(input.serverId);
 
   if (!Number.isInteger(qty) || qty < 1 || qty > 100000) {
     throw new Error("Jumlah tidak valid.");
@@ -25,19 +27,29 @@ export async function createMovement(input: MovementInput) {
   try {
     const result = await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
-        { id: bigint; category_id: bigint; name: string; stock: number }[]
-      >`SELECT id, category_id, name, stock FROM items WHERE id = ${BigInt(input.itemId)} FOR UPDATE`;
+        {
+          id: bigint;
+          category_id: bigint;
+          server_id: bigint;
+          name: string;
+          stock: number;
+        }[]
+      >`SELECT id, category_id, server_id, name, stock FROM items WHERE id = ${BigInt(input.itemId)} FOR UPDATE`;
 
       const row = locked[0];
       if (!row) throw new Error("Item tidak ditemukan.");
       if (Number(row.category_id) !== input.categoryId) {
         throw new Error("Item tidak sesuai kategori.");
       }
+      if (Number(row.server_id) !== input.serverId) {
+        throw new Error("Item tidak termasuk server yang dipilih.");
+      }
 
       // Setelah lock item: cegah double-submit konkuren (klik 2x saat lag)
       const since = new Date(Date.now() - 5000);
       const duplicate = await tx.stockMovement.findFirst({
         where: {
+          serverId,
           userId: input.userId,
           itemId: row.id,
           type: input.type,
@@ -78,6 +90,7 @@ export async function createMovement(input: MovementInput) {
 
       await tx.stockMovement.create({
         data: {
+          serverId,
           itemId: row.id,
           userId: input.userId,
           type: input.type,
@@ -95,7 +108,7 @@ export async function createMovement(input: MovementInput) {
       return { item: fresh, deduped: false };
     });
 
-    await bumpStockVersion();
+    await bumpStockVersion(input.serverId);
 
     const isDeposit = input.type === "in";
     return {
@@ -110,7 +123,7 @@ export async function createMovement(input: MovementInput) {
         : `${isDeposit ? "Deposit" : "Withdraw"} berhasil dicatat.`,
     };
   } catch (e) {
-    await bumpStockVersion();
+    await bumpStockVersion(input.serverId);
     throw e;
   }
 }
@@ -126,12 +139,14 @@ export async function markReturned(
   returnQtyRaw?: number,
   returnNoteRaw?: string | null,
 ) {
+  let serverIdForBump: bigint | null = null;
   try {
     await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
         {
           id: bigint;
           item_id: bigint;
+          server_id: bigint;
           user_id: bigint;
           type: string;
           quantity: number;
@@ -144,7 +159,7 @@ export async function markReturned(
           item_name: string;
         }[]
       >`
-        SELECT sm.id, sm.item_id, sm.user_id, sm.type, sm.quantity, sm.to_whom,
+        SELECT sm.id, sm.item_id, sm.server_id, sm.user_id, sm.type, sm.quantity, sm.to_whom,
                sm.returned_at, sm.unreturnable_at, sm.return_movement_id,
                c.name AS category_name, u.name AS user_name,
                i.name AS item_name
@@ -158,6 +173,7 @@ export async function markReturned(
 
       const withdraw = locked[0];
       if (!withdraw) throw new Error("Transaksi tidak ditemukan.");
+      serverIdForBump = withdraw.server_id;
       if (withdraw.type !== "out") {
         throw new Error("Hanya withdraw yang bisa ditandai pengembalian.");
       }
@@ -230,6 +246,7 @@ export async function markReturned(
       } else {
         const returnMovement = await tx.stockMovement.create({
           data: {
+            serverId: withdraw.server_id,
             itemId: withdraw.item_id,
             userId: actorId,
             type: "in",
@@ -257,9 +274,9 @@ export async function markReturned(
       });
     });
 
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
   } catch (e) {
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
     throw e;
   }
 }
@@ -274,18 +291,21 @@ export async function markUnreturnable(
     throw new Error("Isi alasan kenapa senjata tidak bisa dikembalikan.");
   }
 
+  let serverIdForBump: bigint | null = null;
   try {
     await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
         {
           id: bigint;
+          server_id: bigint;
           type: string;
           returned_at: Date | null;
           unreturnable_at: Date | null;
           category_name: string | null;
         }[]
       >`
-        SELECT sm.id, sm.type, sm.returned_at, sm.unreturnable_at, c.name AS category_name
+        SELECT sm.id, sm.server_id, sm.type, sm.returned_at, sm.unreturnable_at,
+               c.name AS category_name
         FROM stock_movements sm
         JOIN items i ON i.id = sm.item_id
         LEFT JOIN categories c ON c.id = i.category_id
@@ -295,6 +315,7 @@ export async function markUnreturnable(
 
       const withdraw = locked[0];
       if (!withdraw) throw new Error("Transaksi tidak ditemukan.");
+      serverIdForBump = withdraw.server_id;
       if (withdraw.type !== "out" || !isWeaponWithdraw(withdraw.type, withdraw.category_name)) {
         throw new Error(
           "Hanya withdraw kategori yang mengandung Weapon/Senjata yang bisa ditandai.",
@@ -318,9 +339,9 @@ export async function markUnreturnable(
       });
     });
 
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
   } catch (e) {
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
     throw e;
   }
 }
@@ -330,14 +351,16 @@ export type MonitoringFilters = {
   categoryId?: string;
 };
 
-export async function getMonitoringFilterOptions() {
+export async function getMonitoringFilterOptions(serverId: number | bigint) {
+  const sid = BigInt(serverId);
   const [categories, members] = await Promise.all([
     prisma.category.findMany({
+      where: { serverId: sid },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),
     prisma.user.findMany({
-      where: { stockMovements: { some: {} } },
+      where: { stockMovements: { some: { serverId: sid } } },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),
@@ -353,10 +376,12 @@ export async function getMonitoringFilterOptions() {
 }
 
 export async function buildMonitoringPayload(
+  serverId: number | bigint,
   fromDate: Date | null,
   toDate: Date | null,
   filters: MonitoringFilters | string = {},
 ) {
+  const sid = BigInt(serverId);
   // backward compat: old call signature used member name string
   const normalized: MonitoringFilters =
     typeof filters === "string" ? { memberId: filters } : filters;
@@ -370,6 +395,7 @@ export async function buildMonitoringPayload(
 
   const movements = await prisma.stockMovement.findMany({
     where: {
+      serverId: sid,
       ...(fromDate && toDate
         ? { movementDate: { gte: fromDate, lte: toDate } }
         : {}),
@@ -462,8 +488,9 @@ export async function buildMonitoringPayload(
   return { notices, rows, pendingWeapon };
 }
 
-export async function stockPayload() {
+export async function stockPayload(serverId: number | bigint) {
   const items = await prisma.item.findMany({
+    where: { serverId: BigInt(serverId) },
     orderBy: { name: "asc" },
     select: { id: true, categoryId: true, name: true, stock: true },
   });
@@ -490,7 +517,8 @@ export async function stockPayload() {
 /**
  * Analisis selisih stok item vs ledger (masuk - keluar) — read-only, ringan.
  */
-export async function getStockRecapRows() {
+export async function getStockRecapRows(serverId: number | bigint) {
+  const sid = BigInt(serverId);
   const rows = await prisma.$queryRaw<
     {
       id: bigint;
@@ -510,7 +538,8 @@ export async function getStockRecapRows() {
       COALESCE(SUM(CASE WHEN sm.type = 'out' THEN sm.quantity ELSE 0 END), 0)::int AS keluar
     FROM items i
     LEFT JOIN categories c ON c.id = i.category_id
-    LEFT JOIN stock_movements sm ON sm.item_id = i.id
+    LEFT JOIN stock_movements sm ON sm.item_id = i.id AND sm.server_id = ${sid}
+    WHERE i.server_id = ${sid}
     GROUP BY i.id, c.name
     ORDER BY i.name ASC
   `;
@@ -540,10 +569,12 @@ export async function getStockRecapRows() {
   });
 }
 
-export async function getMovementTotals() {
+export async function getMovementTotals(serverId: number | bigint) {
+  const sid = BigInt(serverId);
   const totals = await prisma.$queryRaw<{ type: string; qty: number }[]>`
     SELECT type, COALESCE(SUM(quantity), 0)::int AS qty
     FROM stock_movements
+    WHERE server_id = ${sid}
     GROUP BY type
   `;
   const depositTotal = totals.find((t) => t.type === "in")?.qty ?? 0;
@@ -738,12 +769,14 @@ export async function getItemAuditTrail(itemId: number, limit = 80) {
  * Jika withdraw sudah punya pengembalian, pengembalian ikut dihapus (stok disesuaikan).
  */
 export async function deleteStockMovement(movementId: number) {
+  let serverIdForBump: bigint | null = null;
   try {
     const result = await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
         {
           id: bigint;
           item_id: bigint;
+          server_id: bigint;
           type: string;
           quantity: number;
           purpose: string | null;
@@ -753,7 +786,7 @@ export async function deleteStockMovement(movementId: number) {
           item_stock: number;
         }[]
       >`
-        SELECT sm.id, sm.item_id, sm.type, sm.quantity, sm.purpose, sm.note,
+        SELECT sm.id, sm.item_id, sm.server_id, sm.type, sm.quantity, sm.purpose, sm.note,
                sm.return_movement_id, i.name AS item_name, i.stock AS item_stock
         FROM stock_movements sm
         JOIN items i ON i.id = sm.item_id
@@ -763,6 +796,7 @@ export async function deleteStockMovement(movementId: number) {
 
       const row = locked[0];
       if (!row) throw new Error("Transaksi tidak ditemukan.");
+      serverIdForBump = row.server_id;
 
       await tx.$queryRaw`SELECT id FROM items WHERE id = ${row.item_id} FOR UPDATE`;
 
@@ -842,10 +876,10 @@ export async function deleteStockMovement(movementId: number) {
       };
     });
 
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
     return result;
   } catch (e) {
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
     throw e;
   }
 }
@@ -859,12 +893,14 @@ export async function updateStockMovement(
   movementId: number,
   input: { quantity?: number; note?: string | null },
 ) {
+  let serverIdForBump: bigint | null = null;
   try {
     const result = await prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
         {
           id: bigint;
           item_id: bigint;
+          server_id: bigint;
           type: string;
           quantity: number;
           purpose: string | null;
@@ -875,7 +911,7 @@ export async function updateStockMovement(
           item_stock: number;
         }[]
       >`
-        SELECT sm.id, sm.item_id, sm.type, sm.quantity, sm.purpose, sm.note,
+        SELECT sm.id, sm.item_id, sm.server_id, sm.type, sm.quantity, sm.purpose, sm.note,
                sm.return_movement_id, sm.returned_at,
                i.name AS item_name, i.stock AS item_stock
         FROM stock_movements sm
@@ -886,6 +922,7 @@ export async function updateStockMovement(
 
       const row = locked[0];
       if (!row) throw new Error("Transaksi tidak ditemukan.");
+      serverIdForBump = row.server_id;
 
       await tx.$queryRaw`SELECT id FROM items WHERE id = ${row.item_id} FOR UPDATE`;
 
@@ -963,10 +1000,10 @@ export async function updateStockMovement(
       };
     });
 
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
     return result;
   } catch (e) {
-    await bumpStockVersion();
+    if (serverIdForBump) await bumpStockVersion(serverIdForBump);
     throw e;
   }
 }
@@ -975,12 +1012,15 @@ export async function updateStockMovement(
  * Samakan stok item ke ledger (masuk - keluar). Aman & idempoten.
  * Juga hapus penyesuaian stok awal yang dobel (race repair lama).
  */
-export async function reconcileStockLedger() {
+export async function reconcileStockLedger(serverId: number | bigint) {
+  const sid = BigInt(serverId);
   // Hapus duplikat penyesuaian yang tercipta di detik yang sama
   await prisma.$executeRaw`
     DELETE FROM stock_movements a
     USING stock_movements b
     WHERE a.id > b.id
+      AND a.server_id = ${sid}
+      AND b.server_id = ${sid}
       AND a.item_id = b.item_id
       AND a.type = 'in'
       AND a.purpose = 'deposit'
@@ -998,6 +1038,7 @@ export async function reconcileStockLedger() {
         COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS masuk,
         COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0) AS keluar
       FROM stock_movements
+      WHERE server_id = ${sid}
       GROUP BY item_id
     )
     UPDATE items i
@@ -1005,13 +1046,11 @@ export async function reconcileStockLedger() {
         updated_at = NOW()
     FROM ledger l
     WHERE l.item_id = i.id
+      AND i.server_id = ${sid}
       AND i.stock <> (COALESCE(l.masuk, 0) - COALESCE(l.keluar, 0))
   `;
 
-  // Item tanpa movement sama sekali → biarkan; gap positif tanpa movement
-  // ditangani terpisah hanya jika diminta (jangan auto-deposit lagi di page load)
-
-  await bumpStockVersion();
+  await bumpStockVersion(sid);
   return Number(updated);
 }
 
@@ -1020,5 +1059,7 @@ export async function reconcileStockLedger() {
  * Gunakan reconcileStockLedger() lewat tombol eksplisit.
  */
 export async function repairMissingStockDeposits(actorUserId: bigint, actorName: string) {
-  return reconcileStockLedger();
+  void actorUserId;
+  void actorName;
+  throw new Error("Gunakan reconcileStockLedger(serverId).");
 }

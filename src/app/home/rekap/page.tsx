@@ -2,6 +2,7 @@ import Link from "next/link";
 import { BlcShell } from "@/components/BlcShell";
 import { StockAuditClient } from "@/components/StockAuditClient";
 import { requireSession } from "@/lib/session";
+import { requireSelectedServer } from "@/lib/servers";
 import { prisma } from "@/lib/prisma";
 import { isStaff } from "@/lib/roles";
 import { canManageCatalog } from "@/lib/category-access";
@@ -109,14 +110,15 @@ export default async function RecapPage({
   const session = await requireSession();
   const staff = isStaff(session.user.roles ?? []);
   const canFix = await canManageCatalog(session.user.email);
+  const server = await requireSelectedServer();
   const params = await searchParams;
   let tab = params.tab ?? "stok";
   if (!["stok", "deposit", "withdraw"].includes(tab)) tab = "stok";
   const page = Math.max(1, Number(params.page) || 1);
 
   const [{ depositTotal, withdrawTotal }, stockRows] = await Promise.all([
-    getMovementTotals(),
-    getStockRecapRows(),
+    getMovementTotals(server.id),
+    getStockRecapRows(server.id),
   ]);
 
   const stockTotal = stockRows.reduce((sum, r) => sum + r.stock, 0);
@@ -129,7 +131,10 @@ export default async function RecapPage({
     tab === "stok"
       ? []
       : await prisma.stockMovement.findMany({
-          where: { type: tab === "deposit" ? "in" : "out" },
+          where: {
+            serverId: BigInt(server.id),
+            type: tab === "deposit" ? "in" : "out",
+          },
           select: {
             id: true,
             type: true,
@@ -149,7 +154,10 @@ export default async function RecapPage({
     tab === "stok"
       ? 0
       : await prisma.stockMovement.count({
-          where: { type: tab === "deposit" ? "in" : "out" },
+          where: {
+            serverId: BigInt(server.id),
+            type: tab === "deposit" ? "in" : "out",
+          },
         });
   const totalPages = Math.max(1, Math.ceil(movementCount / PAGE_SIZE));
 
@@ -157,7 +165,9 @@ export default async function RecapPage({
     <BlcShell showNav isStaff={staff} canManageCatalog={canFix} wide scroll>
       <div className="blc-page-head">
         <h1>Cek Stok</h1>
-        <p>Lihat sisa barang di gudang, dan riwayat barang masuk / keluar.</p>
+        <p>
+          Sisa barang & riwayat untuk server <strong>{server.name}</strong>.
+        </p>
       </div>
 
       <div className="blc-stat-grid">
